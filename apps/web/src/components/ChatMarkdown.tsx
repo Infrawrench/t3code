@@ -1324,7 +1324,8 @@ function ChatMarkdown({
     reportFailure: false,
   });
   const preparedConnection = usePreparedConnection(threadRef?.environmentId ?? null);
-  const environmentId = useActiveEnvironmentId();
+  const activeEnvironmentId = useActiveEnvironmentId();
+  const environmentId = threadRef?.environmentId ?? activeEnvironmentId;
   const serverConfig = useAtomValue(serverEnvironment.configValueAtom(environmentId));
   const openInPreferredEditor = useOpenInPreferredEditor(
     environmentId,
@@ -1397,18 +1398,17 @@ function ChatMarkdown({
   );
   const revealMarkdownFileInFileManager = useCallback(
     (filePath: string): Promise<AtomCommandResult<unknown, unknown>> => {
-      const targetEnvironmentId = threadRef?.environmentId ?? environmentId;
-      if (targetEnvironmentId === null) {
+      if (environmentId === null) {
         return Promise.resolve(
           AsyncResult.failure(Cause.fail(new Error("No environment is selected."))),
         );
       }
       return revealInFileManager({
-        environmentId: targetEnvironmentId,
+        environmentId,
         input: { path: filePath },
       });
     },
-    [environmentId, revealInFileManager, threadRef?.environmentId],
+    [environmentId, revealInFileManager],
   );
   const openMarkdownFileInPreview = useCallback(
     (path: string) => {
