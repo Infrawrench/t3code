@@ -1,18 +1,19 @@
 import { useEffect, useState } from "react";
+import {
+  DEFAULT_THREAD_AUTO_SETTLE_AFTER_DAYS,
+  MAX_THREAD_AUTO_SETTLE_AFTER_DAYS,
+  MIN_THREAD_AUTO_SETTLE_AFTER_DAYS,
+} from "@t3tools/contracts";
 
 import {
-  useClientSettings,
+  usePrimarySettings,
   useSidebarV2Enabled,
-  useUpdateClientSettings,
+  useUpdatePrimarySettings,
 } from "../../hooks/useSettings";
 import { Input } from "../ui/input";
 import { Switch } from "../ui/switch";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
 import { searchableSetting } from "./settingsSearch";
-
-const AUTO_SETTLE_MIN_DAYS = 1;
-const AUTO_SETTLE_MAX_DAYS = 90;
-const AUTO_SETTLE_DEFAULT_DAYS = 3;
 
 function AutoSettleDaysInput({
   value,
@@ -31,8 +32,8 @@ function AutoSettleDaysInput({
   return (
     <Input
       type="number"
-      min={AUTO_SETTLE_MIN_DAYS}
-      max={AUTO_SETTLE_MAX_DAYS}
+      min={MIN_THREAD_AUTO_SETTLE_AFTER_DAYS}
+      max={MAX_THREAD_AUTO_SETTLE_AFTER_DAYS}
       className="w-full sm:w-24"
       value={draft}
       onChange={(event) => {
@@ -43,8 +44,8 @@ function AutoSettleDaysInput({
         const parsed = Number(event.target.value);
         if (
           Number.isInteger(parsed) &&
-          parsed >= AUTO_SETTLE_MIN_DAYS &&
-          parsed <= AUTO_SETTLE_MAX_DAYS
+          parsed >= MIN_THREAD_AUTO_SETTLE_AFTER_DAYS &&
+          parsed <= MAX_THREAD_AUTO_SETTLE_AFTER_DAYS
         ) {
           onCommit(parsed);
         }
@@ -57,10 +58,10 @@ function AutoSettleDaysInput({
 
 export function BetaSettingsPanel() {
   const sidebarV2Enabled = useSidebarV2Enabled();
-  const sidebarAutoSettleAfterDays = useClientSettings(
-    (settings) => settings.sidebarAutoSettleAfterDays,
+  const threadAutoSettleAfterDays = usePrimarySettings(
+    (settings) => settings.threadAutoSettleAfterDays,
   );
-  const updateSettings = useUpdateClientSettings();
+  const updateSettings = useUpdatePrimarySettings();
 
   return (
     <SettingsPageContainer>
@@ -87,27 +88,29 @@ export function BetaSettingsPanel() {
           <>
             <SettingsRow
               title={searchableSetting("auto-settle-inactive-threads").title}
-              description="Threads with no activity for this long settle automatically. Threads on merged or closed PRs always settle."
+              description="Threads with no activity for this long settle automatically. Merged PRs always settle."
               control={
                 <Switch
-                  checked={sidebarAutoSettleAfterDays !== null}
+                  checked={threadAutoSettleAfterDays !== null}
                   onCheckedChange={(checked) =>
                     updateSettings({
-                      sidebarAutoSettleAfterDays: checked ? AUTO_SETTLE_DEFAULT_DAYS : null,
+                      threadAutoSettleAfterDays: checked
+                        ? DEFAULT_THREAD_AUTO_SETTLE_AFTER_DAYS
+                        : null,
                     })
                   }
                   aria-label="Auto-settle inactive threads"
                 />
               }
             />
-            {sidebarAutoSettleAfterDays !== null ? (
+            {threadAutoSettleAfterDays !== null ? (
               <SettingsRow
                 title="Days of inactivity before auto-settle"
                 description="Any new activity un-settles a thread automatically."
                 control={
                   <AutoSettleDaysInput
-                    value={sidebarAutoSettleAfterDays}
-                    onCommit={(days) => updateSettings({ sidebarAutoSettleAfterDays: days })}
+                    value={threadAutoSettleAfterDays}
+                    onCommit={(days) => updateSettings({ threadAutoSettleAfterDays: days })}
                   />
                 }
               />

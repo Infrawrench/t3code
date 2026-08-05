@@ -480,26 +480,6 @@ export function HomeScreen(props: HomeScreenProps) {
   // Settled threads stay in the live shell stream (settled ≠ archived), so
   // the partition works directly off live shells — no snapshot merging or
   // optimistic holds.
-  // PR states stream in per-row (rows own the VCS subscriptions); a merged or
-  // closed PR auto-settles its thread on the next partition (mirrors web).
-  const [changeRequestStateByKey, setChangeRequestStateByKey] = useState<
-    ReadonlyMap<string, "open" | "closed" | "merged">
-  >(() => new Map());
-  const handleChangeRequestState = useCallback(
-    (threadKey: string, state: "open" | "closed" | "merged" | null) => {
-      setChangeRequestStateByKey((current) => {
-        if ((current.get(threadKey) ?? null) === state) return current;
-        const next = new Map(current);
-        if (state === null) {
-          next.delete(threadKey);
-        } else {
-          next.set(threadKey, state);
-        }
-        return next;
-      });
-    },
-    [],
-  );
   const handleSettleThread = useCallback(
     (thread: EnvironmentThreadShell) => {
       void props.onSettleThread(thread);
@@ -551,9 +531,8 @@ export function HomeScreen(props: HomeScreenProps) {
   const toggleSnoozedShelf = useCallback(() => setSnoozedShelfExpanded((value) => !value), []);
   const [settledShelfExpanded, setSettledShelfExpanded] = useState(true);
   const toggleSettledShelf = useCallback(() => setSettledShelfExpanded((value) => !value), []);
-  // now is quantized to the minute and ticks so the inactivity auto-settle
-  // boundary is actually crossed while the app stays open (mirrors web);
-  // without a clock dependency the partition memoizes a frozen "now".
+  // The minute tick only refreshes snooze labels and preset choices;
+  // settlement itself is projected server state.
   const [nowMinute, setNowMinute] = useState(() => new Date().toISOString().slice(0, 16));
   // Snooze wake times are second-precise; a counter bumped exactly at the
   // next wake boundary re-runs the partition with a fresh clock so a woken
@@ -561,9 +540,8 @@ export function HomeScreen(props: HomeScreenProps) {
   const [snoozeWakeTick, bumpSnoozeWakeTick] = useState(0);
   useEffect(() => {
     if (!threadListV2Enabled) return;
-    // Refresh immediately on enable: the mount-time value can be hours old
-    // by the time the beta is switched on, which would misclassify the
-    // inactivity auto-settle boundary until the first tick.
+    // Refresh immediately on enable so snooze labels do not inherit an old
+    // mount-time value.
     setNowMinute(new Date().toISOString().slice(0, 16));
     const id = setInterval(() => setNowMinute(new Date().toISOString().slice(0, 16)), 60_000);
     return () => clearInterval(id);
@@ -617,7 +595,6 @@ export function HomeScreen(props: HomeScreenProps) {
       projectRefs: v2ScopedProjectGroup === null ? null : v2ScopedProjectGroup.projectRefs,
       searchQuery: props.searchQuery,
       matchedThreadKeys,
-      changeRequestStateByKey,
       settlementEnvironmentIds,
       snoozeEnvironmentIds,
       settledLimit: settledVisibleCount,
@@ -628,7 +605,6 @@ export function HomeScreen(props: HomeScreenProps) {
       selectedThreadKey: null,
     });
   }, [
-    changeRequestStateByKey,
     nowMinute,
     snoozeWakeTick,
     snoozedShelfExpanded,
@@ -789,7 +765,6 @@ export function HomeScreen(props: HomeScreenProps) {
           onUnsettleThread={handleUnsettleThread}
           onPinThread={handlePinThread}
           onUnpinThread={handleUnpinThread}
-          onChangeRequestState={handleChangeRequestState}
           projectCwd={
             projectCwdByKey.get(scopedProjectKey(thread.environmentId, thread.projectId)) ?? null
           }
@@ -799,7 +774,6 @@ export function HomeScreen(props: HomeScreenProps) {
       );
     },
     [
-      handleChangeRequestState,
       handleDeleteThread,
       handlePinThread,
       handleSettleThread,
