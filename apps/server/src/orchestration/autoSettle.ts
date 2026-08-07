@@ -26,11 +26,15 @@ export const QUEUED_TURN_START_GRACE_MS = 2 * 60 * 1_000;
  *   LIVE lookup — a cached "open" can be arbitrarily stale (the PR may have
  *   merged since polling stopped), so the verdict treats it like "unknown"
  *   on the inactivity path and asks for re-verification.
- * - "none": PR state is decided and there is no gating PR (no branch, no PR
- *   on the branch, or the cwd is checked out elsewhere so the state can
- *   never be determined — same as the clients' old branch-match guard).
- * - "unknown": the thread has a branch but no usable status; the sweep must
- *   verify with a live lookup before an inactivity settle.
+ * - "none": PR state is decided and there is no gating PR: no branch, a
+ *   LIVE lookup found no PR, or the cwd is checked out on a different
+ *   branch (a live lookup cannot change the checkout, so re-verifying a
+ *   refName mismatch would learn nothing — same as the clients' old
+ *   branch-match guard). A cached no-PR result is NOT "none": the cache may
+ *   predate the PR being opened, so it maps to "unknown" and re-verifies
+ *   before an inactivity settle.
+ * - "unknown": the thread has a branch but no live-confirmed PR state; the
+ *   sweep must verify with a live lookup before an inactivity settle.
  */
 export type AutoSettleChangeRequestState =
   | "open"

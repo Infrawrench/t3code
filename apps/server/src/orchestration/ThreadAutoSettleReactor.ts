@@ -9,11 +9,7 @@
  *
  * @module ThreadAutoSettleReactor
  */
-import {
-  CommandId,
-  DEFAULT_THREAD_AUTO_SETTLE_AFTER_DAYS,
-  type ThreadId,
-} from "@t3tools/contracts";
+import { CommandId, type ThreadId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
@@ -83,9 +79,13 @@ export const make = (options?: ThreadAutoSettleReactorOptions) =>
       Effect.map((uuid) => CommandId.make(`server:auto-settle:${uuid}`)),
     );
 
+    // A failed settings read disables the sweep (null) rather than falling
+    // back to the default window: the user may have auto-settle turned OFF,
+    // and hiding threads on a read error is not recoverable by retry the way
+    // skipping a sweep is.
     const autoSettleAfterDays = serverSettings.getSettings.pipe(
       Effect.map((settings) => settings.threadAutoSettleAfterDays),
-      Effect.orElseSucceed(() => DEFAULT_THREAD_AUTO_SETTLE_AFTER_DAYS),
+      Effect.orElseSucceed(() => null),
     );
 
     // The cached PR state for a thread's checkout, mapped exactly like the
@@ -103,9 +103,12 @@ export const make = (options?: ThreadAutoSettleReactorOptions) =>
         if (thread.branch === null) return "none";
         const status = yield* vcsStatusBroadcaster.peekStatus({ cwd: thread.cwd });
         if (status === null) return "unknown";
+        // A live lookup cannot change the checkout, so a refName mismatch is
+        // final; but a cached no-PR result may simply predate the PR being
+        // opened — only a live lookup may conclude "none" for the branch.
         if (status.refName !== thread.branch) return "none";
         const prState = status.pr?.state ?? null;
-        if (prState === null) return "none";
+        if (prState === null) return "unknown";
         return prState === "open" ? "open-cached" : prState;
       },
     );

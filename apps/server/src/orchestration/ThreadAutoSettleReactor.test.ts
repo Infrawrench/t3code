@@ -2,7 +2,7 @@
 import {
   ProjectId,
   ProviderInstanceId,
-  type ServerSettingsError,
+  ServerSettingsError,
   ThreadId,
   type OrchestrationCommand,
   type OrchestrationProjectShell,
@@ -79,6 +79,8 @@ function makeHarness(input: {
   readonly refreshStatus?: Parameters<(typeof VcsStatusBroadcaster)["of"]>[0]["refreshStatus"];
   /** Whether the background policy allows live PR lookups. Default false. */
   readonly opportunisticWork?: boolean;
+  /** Make getSettings fail, exercising the disabled-sweep fallback. */
+  readonly failSettings?: boolean;
 }) {
   const dispatched: OrchestrationCommand[] = [];
   const snapshot: OrchestrationShellSnapshot = {
@@ -117,7 +119,19 @@ function makeHarness(input: {
         shouldRunOpportunisticWork: Effect.succeed(input.opportunisticWork ?? false),
       }),
     ),
-    Layer.provide(ServerSettingsService.layerTest(input.settingsOverrides ?? {})),
+    Layer.provide(
+      input.failSettings === true
+        ? Layer.mock(ServerSettingsService)({
+            getSettings: Effect.fail(
+              new ServerSettingsError({
+                operation: "read-file",
+                settingsPath: "/tmp/settings.json",
+                cause: "unreadable",
+              }),
+            ),
+          })
+        : ServerSettingsService.layerTest(input.settingsOverrides ?? {}),
+    ),
     Layer.provide(NodeServices.layer),
   );
   return { dispatched, layer };
@@ -244,6 +258,60 @@ describe("ThreadAutoSettleReactor", () => {
         peekStatus: () => Effect.succeed(vcsStatus),
         refreshStatus: () => Effect.succeed(vcsStatus),
         opportunisticWork: true,
+      });
+      yield* runSweep(layer);
+
+      expect(dispatched).toHaveLength(0);
+    }),
+  );
+
+  it.live("does not trust a cached no-PR result: live verification finds the open PR", () =>
+    Effect.gen(function* () {
+      // The cached status predates the PR being opened (pr: null). The sweep
+      // must live-verify rather than settle on the stale cache; the live
+      // lookup finds an open PR and the thread stays active.
+      const vcsStatus = (pr: null | "open") => ({
+        isRepo: true,
+        hasPrimaryRemote: true,
+        isDefaultRef: false,
+        refName: "feature/x",
+        hasWorkingTreeChanges: false,
+        workingTree: { files: [], insertions: 0, deletions: 0 },
+        hasUpstream: true,
+        aheadCount: 0,
+        behindCount: 0,
+        pr:
+          pr === null
+            ? null
+            : {
+                number: 42,
+                title: "Feature X",
+                url: "https://github.com/example/repo/pull/42",
+                baseRef: "main",
+                headRef: "feature/x",
+                state: pr,
+              },
+      });
+      const { dispatched, layer } = makeHarness({
+        threads: [makeThread({ id: "cached-no-pr", activityAt: STALE, branch: "feature/x" })],
+        peekStatus: () => Effect.succeed(vcsStatus(null)),
+        refreshStatus: () => Effect.succeed(vcsStatus("open")),
+        opportunisticWork: true,
+      });
+      yield* runSweep(layer);
+
+      expect(dispatched).toHaveLength(0);
+    }),
+  );
+
+  it.live("disables the inactivity sweep when the settings read fails", () =>
+    Effect.gen(function* () {
+      // A failed settings read must not fall back to the default window: the
+      // user may have auto-settle disabled, and hiding threads on a read
+      // error is not undone by the next successful sweep.
+      const { dispatched, layer } = makeHarness({
+        threads: [makeThread({ id: "stale", activityAt: STALE })],
+        failSettings: true,
       });
       yield* runSweep(layer);
 
