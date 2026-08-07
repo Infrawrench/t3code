@@ -237,4 +237,27 @@ describe("resolveAutoSettleVerdict", () => {
       resolveAutoSettleVerdict(fresh, { ...base, changeRequestState: "open-cached" }).kind,
     ).toBe("skip");
   });
+
+  it("re-verifies a cached closed PR instead of settling on it", () => {
+    // A closed PR can be REOPENED; only a live-confirmed close settles. The
+    // check applies regardless of recency, like the live merged/closed path.
+    for (const shell of [makeShell({ activityAt: FRESH }), makeShell({ activityAt: STALE })]) {
+      expect(
+        resolveAutoSettleVerdict(shell, { ...base, changeRequestState: "closed-cached" }).kind,
+      ).toBe("verify-pr");
+    }
+  });
+
+  it("clamps future-stamped activity to now instead of blocking settle forever", () => {
+    // A client clock far ahead must not hold the thread permanently fresh.
+    // The future stamp counts as activity NOW: still active within the
+    // window measured from the sweep's own clock...
+    const futureStamped = makeShell({ activityAt: "2026-04-20T00:00:00.000Z" });
+    expect(resolveAutoSettleVerdict(futureStamped, base).kind).toBe("skip");
+    // ...but once the sweep's clock alone moves a full window past the
+    // stamp, the thread settles — the skew cannot extend the window.
+    expect(
+      resolveAutoSettleVerdict(futureStamped, { ...base, now: "2026-04-24T00:00:00.001Z" }).kind,
+    ).toBe("settle");
+  });
 });

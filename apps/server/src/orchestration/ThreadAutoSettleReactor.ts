@@ -92,9 +92,10 @@ export const make = (options?: ThreadAutoSettleReactorOptions) =>
     // clients' old resolveThreadPr: a status only counts when its refName is
     // the thread's branch (a workspace checked out elsewhere can never
     // determine this thread's PR state, so it gates nothing). A cached
-    // "open" maps to "open-cached": it may have merged since polling
-    // stopped, so it never permanently blocks the inactivity path — the
-    // verdict asks for a cooldown-limited live verification instead.
+    // Cached "open"/"closed" map to their "-cached" variants: an open PR may
+    // have merged and a closed PR may have been REOPENED since polling
+    // stopped, so neither is acted on without a cooldown-limited live
+    // verification. Only "merged" is terminal enough to trust from cache.
     const peekChangeRequestState = Effect.fn("ThreadAutoSettleReactor.peekChangeRequestState")(
       function* (thread: {
         readonly branch: string | null;
@@ -107,9 +108,17 @@ export const make = (options?: ThreadAutoSettleReactorOptions) =>
         // final; but a cached no-PR result may simply predate the PR being
         // opened — only a live lookup may conclude "none" for the branch.
         if (status.refName !== thread.branch) return "none";
-        const prState = status.pr?.state ?? null;
-        if (prState === null) return "unknown";
-        return prState === "open" ? "open-cached" : prState;
+        const pr = status.pr ?? null;
+        if (pr === null) return "unknown";
+        // The cache's local and remote halves update independently: after a
+        // branch switch the local half carries the new refName while the
+        // remote half may still hold the PREVIOUS branch's PR. A PR whose
+        // headRef is not this thread's branch is that stale pairing — never
+        // settle on another branch's merge; verify live instead.
+        if (pr.headRef !== thread.branch) return "unknown";
+        if (pr.state === "open") return "open-cached";
+        if (pr.state === "closed") return "closed-cached";
+        return pr.state;
       },
     );
 

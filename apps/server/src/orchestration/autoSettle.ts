@@ -22,10 +22,12 @@ export const QUEUED_TURN_START_GRACE_MS = 2 * 60 * 1_000;
 /**
  * Change-request state resolved for a thread's checkout:
  * - "open" / "closed" / "merged": the cwd's VCS status matched the thread's
- *   branch and carried this PR state. "open" is only authoritative from a
- *   LIVE lookup — a cached "open" can be arbitrarily stale (the PR may have
- *   merged since polling stopped), so the verdict treats it like "unknown"
- *   on the inactivity path and asks for re-verification.
+ *   branch and carried this LIVE-confirmed PR state. Only "merged" is
+ *   terminal enough to trust from cache; a cached "open" may have merged and
+ *   a cached "closed" may have been reopened since polling stopped, so both
+ *   get "-cached" variants that the verdict treats like "unknown" — asking
+ *   for a live lookup instead of acting on stale data. ("closed-cached"
+ *   still settles, but only after the live lookup confirms it.)
  * - "none": PR state is decided and there is no gating PR: no branch, a
  *   LIVE lookup found no PR, or the cwd is checked out on a different
  *   branch (a live lookup cannot change the checkout, so re-verifying a
@@ -40,6 +42,7 @@ export type AutoSettleChangeRequestState =
   | "open"
   | "open-cached"
   | "closed"
+  | "closed-cached"
   | "merged"
   | "none"
   | "unknown";
@@ -67,6 +70,12 @@ type AutoSettleShell = Pick<
  * the wake time. Counting the wake as activity gives a woken thread a fresh
  * inactivity window; without it, a thread snoozed past the window would
  * settle the instant it woke, defeating the snooze.
+ *
+ * Candidates ahead of `nowMs` are clamped TO `nowMs` rather than ignored:
+ * message timestamps are client-supplied, so a skewed clock must neither
+ * hold the thread "fresh" forever (unclamped future values always beat the
+ * window) nor erase the activity outright (which could settle a thread that
+ * genuinely just spoke). Mirrors the decider's settledAt clamp.
  */
 export function threadLastActivityAt(
   thread: Pick<OrchestrationThreadShell, "latestUserMessageAt" | "latestTurn" | "snoozedUntil">,
@@ -87,7 +96,7 @@ export function threadLastActivityAt(
   let latestTimestamp = Number.NEGATIVE_INFINITY;
   for (const candidate of candidates) {
     if (candidate == null) continue;
-    const timestamp = Date.parse(candidate);
+    const timestamp = Math.min(Date.parse(candidate), nowMs);
     if (timestamp > latestTimestamp) {
       latest = candidate;
       latestTimestamp = timestamp;
@@ -154,6 +163,11 @@ export function resolveAutoSettleVerdict(
   if (changeRequestState === "merged" || changeRequestState === "closed") {
     return { kind: "settle" };
   }
+  // A cached "closed" would settle immediately if trusted, but the PR may
+  // have been REOPENED since polling stopped — confirm live first. (This
+  // sits before the inactivity gate because a confirmed close settles
+  // regardless of recency, exactly like "merged"/"closed" above.)
+  if (changeRequestState === "closed-cached") return { kind: "verify-pr" };
   // A LIVE open PR is unfinished business no matter how long the thread has
   // been quiet: review can take days, and hiding the thread would bury the
   // work waiting on it.
@@ -161,7 +175,9 @@ export function resolveAutoSettleVerdict(
   if (autoSettleAfterDays === null) return { kind: "skip" };
   const lastActivityAt = threadLastActivityAt(thread, nowMs);
   if (lastActivityAt === null) return { kind: "skip" };
-  if (Date.parse(lastActivityAt) >= nowMs - autoSettleAfterDays * DAY_MS) {
+  // Same clamp as threadLastActivityAt: a future-stamped candidate counts as
+  // activity NOW, not activity forever.
+  if (Math.min(Date.parse(lastActivityAt), nowMs) >= nowMs - autoSettleAfterDays * DAY_MS) {
     return { kind: "skip" };
   }
   // Quiet past the window, but PR state undetermined — either nothing cached
