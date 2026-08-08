@@ -17,7 +17,7 @@ import {
   resolveServerBackgroundActivitySettings,
 } from "@t3tools/shared/backgroundActivitySettings";
 
-import { usePrimarySettings, useUpdatePrimarySettings } from "../../hooks/useSettings";
+import { useGlobalSettings, useUpdateGlobalSettings } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
 import { usePrimaryEnvironment } from "../../state/environments";
 import { useEnvironmentQuery } from "../../state/query";
@@ -347,8 +347,8 @@ function DiscoveryItemRow({
 }
 
 function GitFetchIntervalSettings() {
-  const settings = usePrimarySettings();
-  const updateSettings = useUpdatePrimarySettings();
+  const settings = useGlobalSettings();
+  const updateSettings = useUpdateGlobalSettings();
   const resolvedBackgroundActivity = resolveServerBackgroundActivitySettings(settings);
   const automaticGitFetchIntervalSeconds = durationToSeconds(
     resolvedBackgroundActivity.automaticGitFetchInterval,

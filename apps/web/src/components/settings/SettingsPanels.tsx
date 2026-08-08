@@ -62,7 +62,7 @@ import {
   useTheme,
 } from "../../hooks/useTheme";
 import { useLocalStorage } from "../../hooks/useLocalStorage";
-import { usePrimarySettings, useUpdatePrimarySettings } from "../../hooks/useSettings";
+import { useGlobalSettings, useUpdateGlobalSettings } from "../../hooks/useSettings";
 import { useThreadActions } from "../../hooks/useThreadActions";
 import { useDesktopUpdateState } from "../../state/desktopUpdate";
 import {
@@ -76,7 +76,7 @@ import {
 } from "../../providerInstances";
 import { ensureLocalApi, readLocalApi } from "../../localApi";
 import { isMacPlatform } from "../../lib/utils";
-import { primaryServerObservabilityAtom, primaryServerProvidersAtom } from "../../state/server";
+import { primaryServerObservabilityAtom, settingsServerProvidersAtom } from "../../state/server";
 import { useProjects } from "../../state/entities";
 import { useArchivedThreadSnapshots } from "../../lib/archivedThreadsState";
 import { formatRelativeTimeLabel } from "../../timestampFormat";
@@ -459,8 +459,8 @@ export function useSettingsRestore(onRestored?: () => void) {
     clearThemeHalves,
     themeHalves,
   } = useTheme();
-  const settings = usePrimarySettings();
-  const updateSettings = useUpdatePrimarySettings();
+  const settings = useGlobalSettings();
+  const updateSettings = useUpdateGlobalSettings();
 
   const isTextGenerationModelDirty = !Equal.equals(
     settings.textGenerationModelSelection ?? null,
@@ -679,8 +679,8 @@ function BackgroundActivityAdvancedDialog({
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
 }) {
-  const settings = usePrimarySettings();
-  const updateSettings = useUpdatePrimarySettings();
+  const settings = useGlobalSettings();
+  const updateSettings = useUpdateGlobalSettings();
   const resolvedBackgroundActivity = resolveServerBackgroundActivitySettings(settings);
   const activeProfile = resolvedBackgroundActivity.profile;
   const automaticGitFetchIntervalSeconds = durationToSeconds(
@@ -951,8 +951,8 @@ export function AppearanceSettingsPanel() {
   } = useTheme();
   const customThemes = useCustomThemes();
   const [isImportThemeOpen, setIsImportThemeOpen] = useState(false);
-  const settings = usePrimarySettings();
-  const updateSettings = useUpdatePrimarySettings();
+  const settings = useGlobalSettings();
+  const updateSettings = useUpdateGlobalSettings();
   const environmentStageLabel = useEnvironmentStageLabel();
   const showEnvironmentIdentification =
     resolveEnvironmentIdentificationPillLabel(environmentStageLabel) !== null;
@@ -1077,7 +1077,7 @@ export function AppearanceSettingsPanel() {
 }
 
 function useFontDefaultFamilies() {
-  const settings = usePrimarySettings();
+  const settings = useGlobalSettings();
   // An unset preference shows the font it resolves to on this machine; the
   // default stacks are the platform's own faces, so the name is probed, not
   // hardcoded.
@@ -1097,8 +1097,8 @@ function useFontDefaultFamilies() {
 }
 
 function InterfaceFontRow({ preview }: { preview?: ReactNode }) {
-  const settings = usePrimarySettings();
-  const updateSettings = useUpdatePrimarySettings();
+  const settings = useGlobalSettings();
+  const updateSettings = useUpdateGlobalSettings();
   const defaults = useFontDefaultFamilies();
   return (
     <FontFamilySettingsRow
@@ -1120,8 +1120,8 @@ function InterfaceFontRow({ preview }: { preview?: ReactNode }) {
 }
 
 function PromptFontRow() {
-  const settings = usePrimarySettings();
-  const updateSettings = useUpdatePrimarySettings();
+  const settings = useGlobalSettings();
+  const updateSettings = useUpdateGlobalSettings();
   const defaults = useFontDefaultFamilies();
   return (
     <FontFamilySettingsRow
@@ -1151,8 +1151,8 @@ function CodeFontRow({
   description?: string;
   preview?: ReactNode;
 }) {
-  const settings = usePrimarySettings();
-  const updateSettings = useUpdatePrimarySettings();
+  const settings = useGlobalSettings();
+  const updateSettings = useUpdateGlobalSettings();
   const defaults = useFontDefaultFamilies();
   return (
     <FontFamilySettingsRow
@@ -1176,8 +1176,8 @@ function CodeFontRow({
 }
 
 function TerminalFontRow() {
-  const settings = usePrimarySettings();
-  const updateSettings = useUpdatePrimarySettings();
+  const settings = useGlobalSettings();
+  const updateSettings = useUpdateGlobalSettings();
   const defaults = useFontDefaultFamilies();
   return (
     <FontFamilySettingsRow
@@ -1209,8 +1209,8 @@ function TerminalFontRow() {
 }
 
 function FontSmoothingRow() {
-  const settings = usePrimarySettings();
-  const updateSettings = useUpdatePrimarySettings();
+  const settings = useGlobalSettings();
+  const updateSettings = useUpdateGlobalSettings();
   if (!isMacPlatform(navigator.platform)) return null;
   return (
     <SettingsRow
@@ -1238,8 +1238,8 @@ function FontSmoothingRow() {
 }
 
 function WordWrapRow() {
-  const settings = usePrimarySettings();
-  const updateSettings = useUpdatePrimarySettings();
+  const settings = useGlobalSettings();
+  const updateSettings = useUpdateGlobalSettings();
   return (
     <SettingsRow
       {...searchableSetting("word-wrap")}
@@ -1281,7 +1281,7 @@ function FontSettingsGroup() {
  * under each row show every surface the choice reaches.
  */
 function SimpleFontRows() {
-  const settings = usePrimarySettings();
+  const settings = useGlobalSettings();
   return (
     <>
       <InterfaceFontRow preview={<PromptFontPreview />} />
@@ -1691,14 +1691,14 @@ function LegacyFeaturesSection() {
 }
 
 export function GeneralSettingsPanel() {
-  const settings = usePrimarySettings();
-  const updateSettings = useUpdatePrimarySettings();
+  const settings = useGlobalSettings();
+  const updateSettings = useUpdateGlobalSettings();
   const [backgroundActivityDialogOpen, setBackgroundActivityDialogOpen] = useState(false);
   const lastEnabledProjectGroupingMode = useRef<SidebarProjectGroupingMode>(
     readLastEnabledProjectGroupingMode(),
   );
   const observability = useAtomValue(primaryServerObservabilityAtom);
-  const serverProviders = useAtomValue(primaryServerProvidersAtom);
+  const serverProviders = useAtomValue(settingsServerProvidersAtom);
   const diagnosticsDescription = formatDiagnosticsDescription({
     localTracingEnabled: observability?.localTracingEnabled ?? false,
     otlpTracesEnabled: observability?.otlpTracesEnabled ?? false,
