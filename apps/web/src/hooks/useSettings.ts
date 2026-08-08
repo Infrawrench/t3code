@@ -36,8 +36,9 @@ import {
 } from "~/themePalette";
 import * as Struct from "effect/Struct";
 import { primaryServerSettingsAtom, serverEnvironment } from "~/state/server";
-import { usePrimaryEnvironment } from "~/state/environments";
+import { settingsEnvironmentIdAtom } from "~/state/primaryEnvironment";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { useTheme } from "./useTheme";
 
 const CLIENT_SETTINGS_PERSISTENCE_ERROR_SCOPE = "[CLIENT_SETTINGS]";
@@ -310,8 +311,10 @@ export function usePrimarySettings<T = UnifiedSettings>(
 /**
  * Returns an updater that routes each key to the correct backing store.
  *
- * Server keys are optimistically patched in atom-backed server state, then
- * persisted via RPC. Client keys go through client persistence.
+ * Server keys are persisted via RPC and only reappear in the UI once the
+ * server echoes them back over the config subscription — there is no optimistic
+ * local copy, so a dropped patch reads as the control reverting. Client keys go
+ * through client persistence.
  */
 function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
   const persistServerSettings = useAtomCommand(
@@ -328,6 +331,22 @@ function useUpdateSettingsTarget(environmentId: EnvironmentId | null) {
             environmentId,
             input: { patch: serverPatch },
           });
+        } else {
+          // Nothing to write to. Server settings have no optimistic local
+          // state, so dropping the patch here would silently revert the
+          // control to whatever the (absent) server reports — the user sees
+          // their choice bounce back with no explanation.
+          console.error(`${CLIENT_SETTINGS_PERSISTENCE_ERROR_SCOPE} no environment for patch`, {
+            operation: "persist-server",
+            keys: Object.keys(serverPatch),
+          });
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Couldn’t save that setting",
+              description: "Connect an environment first.",
+            }),
+          );
         }
       }
       if (Object.keys(clientPatch).length > 0) {
@@ -348,7 +367,10 @@ export function useUpdateEnvironmentSettings(environmentId: EnvironmentId) {
 }
 
 export function useUpdatePrimarySettings() {
-  return useUpdateSettingsTarget(usePrimaryEnvironment()?.environmentId ?? null);
+  // Must resolve through the same atom `primaryServerSettingsAtom` reads, or
+  // the settings UI displays one environment's settings while saving to
+  // another.
+  return useUpdateSettingsTarget(useAtomValue(settingsEnvironmentIdAtom));
 }
 
 export function useUpdateClientSettings() {

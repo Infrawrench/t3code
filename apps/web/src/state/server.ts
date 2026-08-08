@@ -15,7 +15,7 @@ import { AsyncResult, Atom } from "effect/unstable/reactivity";
 
 import { environmentCatalog } from "../connection/catalog";
 import { connectionAtomRuntime } from "../connection/runtime";
-import { primaryEnvironmentIdAtom } from "./primaryEnvironment";
+import { primaryEnvironmentIdAtom, settingsEnvironmentIdAtom } from "./primaryEnvironment";
 import { environmentSession } from "./session";
 
 export const serverEnvironment = createServerEnvironmentAtoms(connectionAtomRuntime, {
@@ -71,9 +71,16 @@ export const primaryServerWelcomeAtom = Atom.make(
   (get): ServerLifecycleWelcomePayload | null => get(primaryServerStateAtom).welcome,
 ).pipe(Atom.withLabel("web-primary-server-welcome"));
 
-export const primaryServerSettingsAtom = Atom.make(
-  (get): ServerSettings => get(primaryServerConfigAtom)?.settings ?? DEFAULT_SERVER_SETTINGS,
-).pipe(Atom.withLabel("web-primary-server-settings"));
+// Settings follow `settingsEnvironmentIdAtom` rather than the primary
+// environment, so the hosted site (which has no primary connection) reads the
+// same server the settings UI writes to.
+export const primaryServerSettingsAtom = Atom.make((get): ServerSettings => {
+  const environmentId = get(settingsEnvironmentIdAtom);
+  if (environmentId === null) {
+    return DEFAULT_SERVER_SETTINGS;
+  }
+  return get(serverEnvironment.settingsValueAtom(environmentId)) ?? DEFAULT_SERVER_SETTINGS;
+}).pipe(Atom.withLabel("web-primary-server-settings"));
 
 export const primaryServerProvidersAtom = Atom.make(
   (get): ReadonlyArray<ServerProvider> =>

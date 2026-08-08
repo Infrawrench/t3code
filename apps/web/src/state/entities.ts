@@ -63,22 +63,12 @@ const EMPTY_SESSION_ATOM = Atom.make<OrchestrationSession | null>(null).pipe(
   Atom.withLabel("web-thread-session:empty"),
 );
 
-export const activeEnvironmentIdAtom = Atom.make<EnvironmentId | null>(null).pipe(
-  Atom.keepAlive,
-  Atom.withLabel("web-active-environment-id"),
-);
-
-export function useActiveEnvironmentId(): EnvironmentId | null {
-  return useAtomValue(activeEnvironmentIdAtom);
-}
-
-export function readActiveEnvironmentId(): EnvironmentId | null {
-  return appAtomRegistry.get(activeEnvironmentIdAtom);
-}
-
-export function setActiveEnvironmentId(environmentId: EnvironmentId | null): void {
-  appAtomRegistry.set(activeEnvironmentIdAtom, environmentId);
-}
+export {
+  activeEnvironmentIdAtom,
+  readActiveEnvironmentId,
+  setActiveEnvironmentId,
+  useActiveEnvironmentId,
+} from "./activeEnvironment";
 
 export function useProjectRefs(): ReadonlyArray<ScopedProjectRef> {
   return useAtomValue(environmentProjects.projectRefsAtom);
