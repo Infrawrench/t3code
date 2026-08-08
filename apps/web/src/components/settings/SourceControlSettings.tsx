@@ -19,8 +19,8 @@ import {
 
 import { useGlobalSettings, useUpdateGlobalSettings } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
-import { usePrimaryEnvironment } from "../../state/environments";
 import { useEnvironmentQuery } from "../../state/query";
+import { useSettingsEnvironmentId } from "../../state/settingsEnvironment";
 import { sourceControlEnvironment } from "../../state/sourceControl";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -508,7 +508,10 @@ function EmptySourceControlDiscovery({
 }
 
 export function SourceControlSettingsPanel() {
-  const environmentId = usePrimaryEnvironment()?.environmentId ?? null;
+  // The same environment the writing settings below read and write, so the
+  // discovery scan and the writer controls agree about which device they
+  // describe — and so both still mount on a session with no primary device.
+  const environmentId = useSettingsEnvironmentId();
   const discovery = useEnvironmentQuery(
     environmentId === null
       ? null
