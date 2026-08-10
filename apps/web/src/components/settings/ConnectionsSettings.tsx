@@ -1352,7 +1352,7 @@ type StartHookRunState = {
   environmentId: EnvironmentId;
   url: string;
   label: string;
-  phase: "requesting" | "form" | "starting";
+  phase: "requesting" | "form" | "starting" | "connecting";
   form: StartHookForm | null;
   submitting: boolean;
 };
@@ -1360,8 +1360,11 @@ type StartHookRunState = {
 type SavedBackendListRowProps = {
   environment: EnvironmentPresentation;
   removingEnvironmentId: EnvironmentId | null;
+  /** Set while the start hook is cancellable: requesting, form, or polling. */
   startingEnvironmentId: EnvironmentId | null;
-  stoppingEnvironmentId: EnvironmentId | null;
+  /** Set while a completed start hook hands off to the connect flow. */
+  startHookConnectingEnvironmentId: EnvironmentId | null;
+  stoppingEnvironmentIds: ReadonlySet<EnvironmentId>;
   onConnect: (environmentId: EnvironmentId) => void;
   onCancelStart: (environmentId: EnvironmentId) => void;
   onStop: (environmentId: EnvironmentId) => void;
@@ -1372,7 +1375,8 @@ function SavedBackendListRow({
   environment,
   removingEnvironmentId,
   startingEnvironmentId,
-  stoppingEnvironmentId,
+  startHookConnectingEnvironmentId,
+  stoppingEnvironmentIds,
   onConnect,
   onCancelStart,
   onStop,
@@ -1383,7 +1387,8 @@ function SavedBackendListRow({
   const isConnected = connectionState === "connected";
   const isConnecting = connectionState === "connecting" || connectionState === "reconnecting";
   const isStarting = startingEnvironmentId === environmentId;
-  const isStopping = stoppingEnvironmentId === environmentId;
+  const isHandingOffToConnect = startHookConnectingEnvironmentId === environmentId;
+  const isStopping = stoppingEnvironmentIds.has(environmentId);
   const stopHookConfigured = environment.serverConfig?.settings.stopHookUrl != null;
   const stateDotClassName =
     connectionState === "connected"
@@ -1561,7 +1566,9 @@ function SavedBackendListRow({
                 <Button
                   size="xs"
                   variant="outline"
-                  disabled={isConnecting || removingEnvironmentId === environmentId}
+                  disabled={
+                    isConnecting || isHandingOffToConnect || removingEnvironmentId === environmentId
+                  }
                   onClick={() =>
                     void (isConnected ? onRemove(environmentId) : onConnect(environmentId))
                   }
@@ -1570,7 +1577,7 @@ function SavedBackendListRow({
                     ? removingEnvironmentId === environmentId
                       ? "Disconnecting…"
                       : "Disconnect"
-                    : isConnecting
+                    : isConnecting || isHandingOffToConnect
                       ? "Connecting…"
                       : "Connect"}
                 </Button>
@@ -1877,8 +1884,11 @@ export function ConnectionsSettings() {
   const [isAddingSavedBackend, setIsAddingSavedBackend] = useState(false);
   const [removingSavedEnvironmentId, setRemovingSavedEnvironmentId] =
     useState<EnvironmentId | null>(null);
-  const [stoppingSavedEnvironmentId, setStoppingSavedEnvironmentId] =
-    useState<EnvironmentId | null>(null);
+  // Stops run per environment and can overlap, so track a set rather than a
+  // single slot that one finishing stop would clear for all the others.
+  const [stoppingSavedEnvironmentIds, setStoppingSavedEnvironmentIds] = useState<
+    ReadonlySet<EnvironmentId>
+  >(() => new Set());
   const [startHookRun, setStartHookRun] = useState<StartHookRunState | null>(null);
   const startHookAbortRef = useRef<AbortController | null>(null);
   const [isUpdatingDesktopServerExposure, setIsUpdatingDesktopServerExposure] = useState(false);
@@ -2358,9 +2368,18 @@ export function ConnectionsSettings() {
         await pollStartHookUntilReady(step.poll, { signal: controller.signal });
       }
       if (!isCurrentStartHook(controller)) return;
-      startHookAbortRef.current = null;
-      setStartHookRun(null);
-      await connectSavedBackendNow(run.environmentId);
+      // Hold the run through the connect handoff. `retryNow` only signals the
+      // supervisor, so clearing here would flash an enabled Connect button and
+      // let a second start-hook run begin under the first one.
+      setStartHookRun({ ...run, phase: "connecting", form: null, submitting: false });
+      try {
+        await connectSavedBackendNow(run.environmentId);
+      } finally {
+        if (isCurrentStartHook(controller)) {
+          startHookAbortRef.current = null;
+          setStartHookRun(null);
+        }
+      }
     },
     [connectSavedBackendNow, isCurrentStartHook],
   );
@@ -2419,9 +2438,13 @@ export function ConnectionsSettings() {
 
   const handleStopSavedBackend = useCallback(
     async (environmentId: EnvironmentId) => {
-      setStoppingSavedEnvironmentId(environmentId);
+      setStoppingSavedEnvironmentIds((current) => new Set(current).add(environmentId));
       const result = await runStopHookCommand({ environmentId, input: {} });
-      setStoppingSavedEnvironmentId(null);
+      setStoppingSavedEnvironmentIds((current) => {
+        const next = new Set(current);
+        next.delete(environmentId);
+        return next;
+      });
       if (result._tag === "Failure") {
         if (isAtomCommandInterrupted(result)) return;
         const error = squashAtomCommandFailure(result);
@@ -3628,8 +3651,15 @@ export function ConnectionsSettings() {
             key={environment.environmentId}
             environment={environment}
             removingEnvironmentId={removingSavedEnvironmentId}
-            startingEnvironmentId={startHookRun?.environmentId ?? null}
-            stoppingEnvironmentId={stoppingSavedEnvironmentId}
+            startingEnvironmentId={
+              startHookRun !== null && startHookRun.phase !== "connecting"
+                ? startHookRun.environmentId
+                : null
+            }
+            startHookConnectingEnvironmentId={
+              startHookRun?.phase === "connecting" ? startHookRun.environmentId : null
+            }
+            stoppingEnvironmentIds={stoppingSavedEnvironmentIds}
             onConnect={handleConnectSavedBackend}
             onCancelStart={handleCancelStartHook}
             onStop={handleStopSavedBackend}
