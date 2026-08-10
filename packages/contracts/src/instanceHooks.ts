@@ -79,22 +79,40 @@ export const ServerStopHookResult = Schema.Struct({
 });
 export type ServerStopHookResult = typeof ServerStopHookResult.Type;
 
-export class ServerStopHookError extends Schema.TaggedErrorClass<ServerStopHookError>()(
-  "ServerStopHookError",
+export class ServerStopHookNotConfiguredError extends Schema.TaggedErrorClass<ServerStopHookNotConfiguredError>()(
+  "ServerStopHookNotConfiguredError",
+  {},
+) {
+  override get message(): string {
+    return "No stop hook is configured on this server.";
+  }
+}
+
+export class ServerStopHookRequestError extends Schema.TaggedErrorClass<ServerStopHookRequestError>()(
+  "ServerStopHookRequestError",
   {
-    reason: Schema.Literals(["not-configured", "request-failed", "unexpected-status"]),
-    status: Schema.optional(Schema.Number),
-    detail: Schema.optional(Schema.String),
+    cause: Schema.Defect(),
   },
 ) {
   override get message(): string {
-    switch (this.reason) {
-      case "not-configured":
-        return "No stop hook is configured on this server.";
-      case "request-failed":
-        return `The stop hook request failed${this.detail === undefined ? "" : `: ${this.detail}`}.`;
-      case "unexpected-status":
-        return `The stop hook responded with unexpected status ${this.status ?? 0}.`;
-    }
+    return "The stop hook request failed.";
   }
 }
+
+export class ServerStopHookUnexpectedStatusError extends Schema.TaggedErrorClass<ServerStopHookUnexpectedStatusError>()(
+  "ServerStopHookUnexpectedStatusError",
+  {
+    status: Schema.Number,
+  },
+) {
+  override get message(): string {
+    return `The stop hook responded with unexpected status ${this.status}.`;
+  }
+}
+
+export const ServerStopHookError = Schema.Union([
+  ServerStopHookNotConfiguredError,
+  ServerStopHookRequestError,
+  ServerStopHookUnexpectedStatusError,
+]);
+export type ServerStopHookError = typeof ServerStopHookError.Type;

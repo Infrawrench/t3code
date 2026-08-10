@@ -52,6 +52,7 @@ export interface StartHookRequestOptions {
   readonly signal?: AbortSignal;
   readonly fetchImpl?: typeof fetch;
   readonly sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  readonly now?: () => number;
 }
 
 function resolveFetch(options: StartHookRequestOptions): typeof fetch {
@@ -159,11 +160,14 @@ export async function pollStartHookUntilReady(
 ): Promise<void> {
   const fetchImpl = resolveFetch(options);
   const sleep = options.sleep ?? defaultSleep;
+  const now = options.now ?? Date.now;
   const intervalMs = Math.min(
     Math.max(poll.retry_secs * 1_000, MIN_POLL_INTERVAL_MS),
     MAX_POLL_INTERVAL_MS,
   );
-  for (let elapsedMs = 0; elapsedMs <= POLL_DEADLINE_MS; elapsedMs += intervalMs) {
+  // Wall-clock deadline so slow poll requests count against it too.
+  const deadlineAt = now() + POLL_DEADLINE_MS;
+  while (true) {
     let response: Response;
     try {
       response = await fetchImpl(poll.poll_url, { method: "GET", signal: options.signal ?? null });
@@ -177,7 +181,9 @@ export async function pollStartHookUntilReady(
     if (response.status >= 400) {
       throw new StartHookError(`Polling the start hook failed with status ${response.status}.`);
     }
+    if (now() + intervalMs > deadlineAt) {
+      throw new StartHookError("The instance did not report ready in time.");
+    }
     await sleep(intervalMs, options.signal);
   }
-  throw new StartHookError("The instance did not report ready in time.");
 }

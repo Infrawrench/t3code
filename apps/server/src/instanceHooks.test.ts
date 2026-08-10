@@ -1,4 +1,8 @@
-import { ServerStopHookError } from "@t3tools/contracts";
+import {
+  ServerStopHookNotConfiguredError,
+  ServerStopHookRequestError,
+  ServerStopHookUnexpectedStatusError,
+} from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -25,7 +29,9 @@ const makeHookEndpointLayer = (requests: Array<RecordedHookRequest>, status: num
     ),
   );
 
-const isStopHookError = Schema.is(ServerStopHookError);
+const isNotConfiguredError = Schema.is(ServerStopHookNotConfiguredError);
+const isRequestError = Schema.is(ServerStopHookRequestError);
+const isUnexpectedStatusError = Schema.is(ServerStopHookUnexpectedStatusError);
 
 it.effect("DELETEs the stop hook and reports the instance as stopping on 204", () =>
   Effect.gen(function* () {
@@ -63,6 +69,35 @@ it.effect("clears the stop hook setting when the endpoint is gone", () =>
   }),
 );
 
+it.effect("keeps a stop hook reconfigured while the 404 request was in flight", () =>
+  Effect.gen(function* () {
+    const staleUrl = "https://mgmt.example.test/instances/1/stop";
+    const replacementUrl = "https://mgmt.example.test/instances/2/stop";
+    const settingsLayer = ServerSettings.layerTest({ stopHookUrl: staleUrl });
+    const result = yield* Effect.gen(function* () {
+      const serverSettings = yield* ServerSettings.ServerSettingsService;
+      // The endpoint swaps the configured hook mid-request, before answering
+      // 404 for the stale URL.
+      const swappingEndpointLayer = Layer.succeed(
+        HttpClient.HttpClient,
+        HttpClient.make((request) =>
+          serverSettings.updateSettings({ stopHookUrl: replacementUrl }).pipe(
+            Effect.orDie,
+            Effect.map(() =>
+              HttpClientResponse.fromWeb(request, new Response(null, { status: 404 })),
+            ),
+          ),
+        ),
+      );
+      const outcome = yield* InstanceHooks.runStopHook.pipe(Effect.provide(swappingEndpointLayer));
+      const settings = yield* serverSettings.getSettings;
+      return { outcome, stopHookUrl: settings.stopHookUrl };
+    }).pipe(Effect.provide(settingsLayer));
+    assert.deepEqual(result.outcome, { outcome: "gone" });
+    assert.equal(result.stopHookUrl, replacementUrl);
+  }),
+);
+
 it.effect("fails when no stop hook is configured", () =>
   Effect.gen(function* () {
     const requests: Array<RecordedHookRequest> = [];
@@ -72,8 +107,24 @@ it.effect("fails when no stop hook is configured", () =>
       ),
       Effect.flip,
     );
-    assert.isTrue(isStopHookError(failure));
-    assert.equal(isStopHookError(failure) ? failure.reason : null, "not-configured");
+    assert.isTrue(isNotConfiguredError(failure));
+    assert.deepEqual(requests, []);
+  }),
+);
+
+it.effect("refuses a stop hook that is not an http(s) URL without issuing a request", () =>
+  Effect.gen(function* () {
+    const requests: Array<RecordedHookRequest> = [];
+    const failure = yield* InstanceHooks.runStopHook.pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          makeHookEndpointLayer(requests, 204),
+          ServerSettings.layerTest({ stopHookUrl: "file:///etc/passwd" }),
+        ),
+      ),
+      Effect.flip,
+    );
+    assert.isTrue(isRequestError(failure));
     assert.deepEqual(requests, []);
   }),
 );
@@ -92,11 +143,8 @@ it.effect("surfaces unexpected statuses without clearing the hook", () =>
       const settings = yield* (yield* ServerSettings.ServerSettingsService).getSettings;
       return { failure, stopHookUrl: settings.stopHookUrl };
     }).pipe(Effect.provide(settingsLayer));
-    assert.isTrue(isStopHookError(result.failure));
-    assert.equal(
-      isStopHookError(result.failure) ? result.failure.reason : null,
-      "unexpected-status",
-    );
+    assert.isTrue(isUnexpectedStatusError(result.failure));
+    assert.equal(isUnexpectedStatusError(result.failure) ? result.failure.status : null, 500);
     assert.equal(result.stopHookUrl, "https://mgmt.example.test/instances/1/stop");
   }),
 );

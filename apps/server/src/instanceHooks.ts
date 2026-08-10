@@ -1,11 +1,25 @@
 import * as Effect from "effect/Effect";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
-import { ServerStopHookError, type ServerStopHookResult } from "@t3tools/contracts";
+import {
+  ServerStopHookNotConfiguredError,
+  ServerStopHookRequestError,
+  ServerStopHookUnexpectedStatusError,
+  type ServerStopHookResult,
+} from "@t3tools/contracts";
 
 import * as ServerSettings from "./serverSettings.ts";
 
 const STOP_HOOK_TIMEOUT = "20 seconds";
+
+function isHttpUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Run the configured stop hook: DELETE the management endpoint that stops
@@ -16,22 +30,29 @@ const STOP_HOOK_TIMEOUT = "20 seconds";
 export const runStopHook = Effect.gen(function* () {
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const httpClient = yield* HttpClient.HttpClient;
-  const settings = yield* serverSettings.getSettings;
-  if (settings.stopHookUrl === null) {
-    return yield* new ServerStopHookError({ reason: "not-configured" });
+  const stopHookUrl = (yield* serverSettings.getSettings).stopHookUrl;
+  if (stopHookUrl === null) {
+    return yield* new ServerStopHookNotConfiguredError({});
   }
-  const response = yield* httpClient.execute(HttpClientRequest.delete(settings.stopHookUrl)).pipe(
+  if (!isHttpUrl(stopHookUrl)) {
+    return yield* new ServerStopHookRequestError({
+      cause: new Error("The configured stop hook is not an http(s) URL."),
+    });
+  }
+  const response = yield* httpClient.execute(HttpClientRequest.delete(stopHookUrl)).pipe(
     Effect.timeout(STOP_HOOK_TIMEOUT),
-    Effect.mapError(
-      (error) => new ServerStopHookError({ reason: "request-failed", detail: String(error) }),
-    ),
+    Effect.mapError((error) => new ServerStopHookRequestError({ cause: error })),
   );
   if (response.status === 204) {
     return { outcome: "stopped" } satisfies ServerStopHookResult;
   }
   if (response.status === 404) {
-    yield* serverSettings.updateSettings({ stopHookUrl: null });
+    // Re-read before clearing: only forget the hook that actually returned
+    // the 404, not one reconfigured while the request was in flight.
+    if ((yield* serverSettings.getSettings).stopHookUrl === stopHookUrl) {
+      yield* serverSettings.updateSettings({ stopHookUrl: null });
+    }
     return { outcome: "gone" } satisfies ServerStopHookResult;
   }
-  return yield* new ServerStopHookError({ reason: "unexpected-status", status: response.status });
+  return yield* new ServerStopHookUnexpectedStatusError({ status: response.status });
 });

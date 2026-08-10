@@ -132,6 +132,31 @@ describe("pollStartHookUntilReady", () => {
     expect(requests.every((request) => request.method === "GET")).toBe(true);
   });
 
+  it("gives up when the deadline passes, counting slow requests against it", async () => {
+    const requests: Array<RecordedRequest> = [];
+    let clock = 0;
+    await expect(
+      pollStartHookUntilReady(
+        { poll_url: "https://mgmt.test/poll/1", retry_secs: 5 },
+        {
+          fetchImpl: makeFetch(
+            [new Response(null, { status: 200 }), new Response(null, { status: 200 })],
+            requests,
+          ),
+          sleep: noSleep,
+          // Each poll round trip "takes" eleven minutes, blowing the deadline
+          // even though only one interval of sleep has been requested.
+          now: () => {
+            const at = clock;
+            clock += 11 * 60_000;
+            return at;
+          },
+        },
+      ),
+    ).rejects.toThrow("did not report ready in time");
+    expect(requests).toHaveLength(1);
+  });
+
   it("fails when polling returns an error status", async () => {
     await expect(
       pollStartHookUntilReady(

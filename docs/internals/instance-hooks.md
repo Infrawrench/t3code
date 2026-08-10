@@ -92,8 +92,11 @@ carry a `stopHookUrl`; clicking it calls the `server.runStopHook` RPC (scope
 
 - `204` — the instance is stopping; the RPC reports `outcome: "stopped"`.
 - `404` — the hook no longer exists. The server clears `stopHookUrl` from its settings (which
-  streams to clients and removes the Stop button) and reports `outcome: "gone"`.
-- Anything else fails the RPC with `ServerStopHookError`.
+  streams to clients and removes the Stop button) and reports `outcome: "gone"`. The clear is
+  compare-and-set: a hook reconfigured while the request was in flight is left alone.
+- Anything else fails the RPC with one of the `ServerStopHookError` union members
+  (`ServerStopHookNotConfiguredError`, `ServerStopHookRequestError`,
+  `ServerStopHookUnexpectedStatusError`). Only `http:`/`https:` URLs are dialed.
 
 After a stop, the saved environment keeps its registration, credentials, and cached config; the
 connection drops like any other server that went away, and the next Connect click runs the start

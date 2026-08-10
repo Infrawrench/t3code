@@ -6,7 +6,16 @@ import {
   TerminalIcon,
 } from "lucide-react";
 import { useAtomValue } from "@effect/atom-react";
-import { type ReactNode, memo, useCallback, useId, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  memo,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   AuthAccessReadScope,
   AuthAccessWriteScope,
@@ -2307,15 +2316,19 @@ export function ConnectionsSettings() {
     [retryEnvironment],
   );
 
-  const finishStartHook = useCallback(() => {
-    startHookAbortRef.current = null;
-    setStartHookRun(null);
-  }, []);
+  // Every state write below is guarded by controller identity: a run that was
+  // superseded by a newer Connect click or cancelled must not clear or
+  // overwrite the newer run's state when its in-flight promise settles.
+  const isCurrentStartHook = useCallback(
+    (controller: AbortController) => startHookAbortRef.current === controller,
+    [],
+  );
 
   const failStartHook = useCallback(
-    (error: unknown, aborted: boolean) => {
-      finishStartHook();
-      if (aborted) return;
+    (controller: AbortController, error: unknown) => {
+      if (!isCurrentStartHook(controller)) return;
+      startHookAbortRef.current = null;
+      setStartHookRun(null);
       const message = error instanceof Error ? error.message : "Failed to start the instance.";
       setSavedBackendError(message);
       toastManager.add(
@@ -2326,7 +2339,7 @@ export function ConnectionsSettings() {
         }),
       );
     },
-    [finishStartHook],
+    [isCurrentStartHook],
   );
 
   const settleStartHookStep = useCallback(
@@ -2335,6 +2348,7 @@ export function ConnectionsSettings() {
       step: StartHookStep,
       controller: AbortController,
     ) => {
+      if (!isCurrentStartHook(controller)) return;
       if (step.kind === "form") {
         setStartHookRun({ ...run, phase: "form", form: step.form, submitting: false });
         return;
@@ -2343,10 +2357,12 @@ export function ConnectionsSettings() {
         setStartHookRun({ ...run, phase: "starting", form: null, submitting: false });
         await pollStartHookUntilReady(step.poll, { signal: controller.signal });
       }
-      finishStartHook();
+      if (!isCurrentStartHook(controller)) return;
+      startHookAbortRef.current = null;
+      setStartHookRun(null);
       await connectSavedBackendNow(run.environmentId);
     },
-    [connectSavedBackendNow, finishStartHook],
+    [connectSavedBackendNow, isCurrentStartHook],
   );
 
   const handleConnectSavedBackend = useCallback(
@@ -2367,16 +2383,23 @@ export function ConnectionsSettings() {
         const step = await requestStartHook(startHookUrl, { signal: controller.signal });
         await settleStartHookStep(run, step, controller);
       } catch (error) {
-        failStartHook(error, controller.signal.aborted);
+        failStartHook(controller, error);
       }
     },
     [environments, connectSavedBackendNow, settleStartHookStep, failStartHook],
   );
 
+  // Detach the controller before aborting so the run's pending rejection takes
+  // the superseded path instead of reporting a failure for a cancelled start.
   const handleCancelStartHook = useCallback(() => {
-    startHookAbortRef.current?.abort();
-    finishStartHook();
-  }, [finishStartHook]);
+    const controller = startHookAbortRef.current;
+    startHookAbortRef.current = null;
+    setStartHookRun(null);
+    controller?.abort();
+  }, []);
+
+  // Leaving the page must not keep polling nor connect the environment later.
+  useEffect(() => handleCancelStartHook, [handleCancelStartHook]);
 
   const handleSubmitStartHookForm = useCallback(
     async (values: ReadonlyArray<string>) => {
@@ -2388,7 +2411,7 @@ export function ConnectionsSettings() {
         const step = await submitStartHookForm(run.url, values, { signal: controller.signal });
         await settleStartHookStep(run, step, controller);
       } catch (error) {
-        failStartHook(error, controller.signal.aborted);
+        failStartHook(controller, error);
       }
     },
     [startHookRun, settleStartHookStep, failStartHook],
