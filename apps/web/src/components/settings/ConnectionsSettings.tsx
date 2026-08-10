@@ -2367,6 +2367,9 @@ export function ConnectionsSettings() {
         setStartHookRun({ ...run, phase: "starting", form: null, submitting: false });
         await pollStartHookUntilReady(step.poll, { signal: controller.signal });
       }
+      // Cancel and unmount both detach the controller before aborting, so this
+      // check is also what stops a connect from being started after either.
+      // Nothing can interleave between it and the call below.
       if (!isCurrentStartHook(controller)) return;
       // Hold the run through the connect handoff. `retryNow` only signals the
       // supervisor, so clearing here would flash an enabled Connect button and
@@ -2417,7 +2420,9 @@ export function ConnectionsSettings() {
     controller?.abort();
   }, []);
 
-  // Leaving the page must not keep polling nor connect the environment later.
+  // Leaving the page stops the hook request/poll and prevents a connect from
+  // being started afterwards. A connect already dispatched is the user's
+  // committed intent and is owned by the supervisor, so it is left to finish.
   useEffect(() => handleCancelStartHook, [handleCancelStartHook]);
 
   const handleSubmitStartHookForm = useCallback(
