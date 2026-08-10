@@ -770,19 +770,73 @@ for (const failure of localPermissionFailures) {
   });
 }
 
+it.effect("prefers not-found over the access-rights footer git pairs with it", () => {
+  // GitHub/GitLab SSH for a missing repo writes both lines. Matching
+  // "access rights" first would call that authentication.
+  const failing = makeFailingGitLayer(
+    `ERROR: Repository not found.\n` +
+      `fatal: Could not read from remote repository.\n` +
+      `Please make sure you have the correct access rights\n` +
+      `and the repository exists.\n`,
+  );
+
+  return Effect.scoped(
+    Effect.gen(function* () {
+      const driver = yield* GitVcsDriver.GitVcsDriver;
+      const cwd = yield* makeTmpDir();
+      const error = yield* driver
+        .execute({
+          operation: "GitVcsDriver.test.notFoundWithAccessRights",
+          cwd,
+          args: ["clone", "git@github.com:owner/missing.git", "projects"],
+        })
+        .pipe(Effect.flip);
+
+      assert.equal(failing.spawns.length, 1);
+      assert.instanceOf(error, GitCommandError);
+      assert.equal(error.failureKind, "not-found");
+      assert.notInclude(error.detail.toLowerCase(), "authentication");
+      assert.notInclude(error.detail.toLowerCase(), "credentials");
+    }),
+  ).pipe(Effect.provide(failing.layer));
+});
+
 it.layer(TestLayer)("GitVcsDriver core integration", (it) => {
   describe("process environment", () => {
-    it.effect("preserves the caller locale for general Git subprocesses", () =>
+    it.effect("preserves the caller locale when non-zero exits are returned raw", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
+        const driver = yield* GitVcsDriver.GitVcsDriver;
 
-        const locale = yield* git(
+        // allowNonZeroExit skips classification, so the caller's locale rides
+        // through with the raw stdout/stderr instead of being forced to C.
+        const result = yield* driver.execute({
+          operation: "GitVcsDriver.test.printLocale",
           cwd,
-          ["-c", 'alias.print-locale=!printf "%s" "$LC_ALL"', "print-locale"],
-          { LC_ALL: "zh_CN.UTF-8" },
-        );
+          args: ["-c", 'alias.print-locale=!printf "%s" "$LC_ALL"', "print-locale"],
+          env: { LC_ALL: "zh_CN.UTF-8" },
+          allowNonZeroExit: true,
+          timeoutMs: 10_000,
+        });
 
-        assert.equal(locale, "zh_CN.UTF-8");
+        assert.equal(result.stdout.trim(), "zh_CN.UTF-8");
+      }),
+    );
+
+    it.effect("forces a stable locale when a failure will be classified", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+
+        const result = yield* driver.execute({
+          operation: "GitVcsDriver.test.printLocaleClassified",
+          cwd,
+          args: ["-c", 'alias.print-locale=!printf "%s" "$LC_ALL"', "print-locale"],
+          env: { LC_ALL: "zh_CN.UTF-8" },
+          timeoutMs: 10_000,
+        });
+
+        assert.equal(result.stdout.trim(), "C");
       }),
     );
   });

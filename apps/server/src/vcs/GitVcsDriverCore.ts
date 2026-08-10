@@ -413,8 +413,6 @@ const classifyGitFailure = (stderr: string): VcsProcessExitFailureKind => {
     normalized.includes("could not read password") ||
     normalized.includes("invalid username or password") ||
     normalized.includes("authentication required") ||
-    // "...make sure you have the correct access rights and the repository exists."
-    normalized.includes("access rights") ||
     // ssh names the methods it tried: "Permission denied (publickey)." A bare
     // "permission denied" is a local filesystem error — `git init` into an
     // unwritable directory reaches this function too, and telling someone to
@@ -425,8 +423,15 @@ const classifyGitFailure = (stderr: string): VcsProcessExitFailureKind => {
   ) {
     return "authentication";
   }
+  // Before the generic "access rights" footer: GitHub/GitLab SSH failures for a
+  // missing repo include both "Repository not found" and "correct access rights",
+  // and the actionable classification is not-found.
   if (normalized.includes("not found") || normalized.includes("does not exist")) {
     return "not-found";
+  }
+  // "...make sure you have the correct access rights and the repository exists."
+  if (normalized.includes("access rights")) {
+    return "authentication";
   }
   return "command-failed";
 };
@@ -815,6 +820,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
               }),
           ),
         );
+        // Classified failures match English stderr. When this path will turn a
+        // non-zero exit into a failureKind, force a stable locale so translated
+        // git text cannot miss every heuristic. allowNonZeroExit callers get
+        // the caller's locale back with the raw output instead.
         const child = yield* commandSpawner
           .spawn(
             ChildProcess.make("git", commandInput.args, {
@@ -822,6 +831,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
               env: {
                 ...process.env,
                 ...input.env,
+                ...(input.allowNonZeroExit ? {} : { LC_ALL: "C" }),
                 ...trace2Monitor.env,
               },
             }),
@@ -956,8 +966,13 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       operation,
       cwd,
       args,
+      // execute always allows non-zero so this wrapper can classify; force a
+      // stable locale whenever that classification will run (see executeRaw).
+      env: {
+        ...options.env,
+        ...(options.allowNonZeroExit ? {} : { LC_ALL: "C" }),
+      },
       ...(options.stdin !== undefined ? { stdin: options.stdin } : {}),
-      ...(options.env !== undefined ? { env: options.env } : {}),
       allowNonZeroExit: true,
       ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
       ...(options.maxOutputBytes !== undefined ? { maxOutputBytes: options.maxOutputBytes } : {}),
