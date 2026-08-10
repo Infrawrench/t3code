@@ -6,7 +6,7 @@ import {
   TerminalIcon,
 } from "lucide-react";
 import { useAtomValue } from "@effect/atom-react";
-import { type ReactNode, memo, useCallback, useId, useMemo, useState } from "react";
+import { type ReactNode, memo, useCallback, useId, useMemo, useRef, useState } from "react";
 import {
   AuthAccessReadScope,
   AuthAccessWriteScope,
@@ -27,6 +27,7 @@ import {
   type DesktopServerExposureState,
   type DesktopWslState,
   type EnvironmentId,
+  type StartHookForm,
 } from "@t3tools/contracts";
 import { connectionStatusText } from "@t3tools/client-runtime/connection";
 import {
@@ -40,6 +41,13 @@ import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { cn } from "../../lib/utils";
 import { formatElapsedDurationLabel, formatExpiresInLabel } from "../../timestampFormat";
 import { resolveDesktopPairingUrl, resolveHostedPairingUrl } from "./pairingUrls";
+import { StartHookFormDialog } from "./StartHookFormDialog";
+import {
+  type StartHookStep,
+  pollStartHookUntilReady,
+  requestStartHook,
+  submitStartHookForm,
+} from "./startHook";
 import {
   applyWslEnableSelection,
   isQrShareableEndpoint,
@@ -1331,23 +1339,43 @@ function NetworkAccessDescription({
   );
 }
 
+type StartHookRunState = {
+  environmentId: EnvironmentId;
+  url: string;
+  label: string;
+  phase: "requesting" | "form" | "starting";
+  form: StartHookForm | null;
+  submitting: boolean;
+};
+
 type SavedBackendListRowProps = {
   environment: EnvironmentPresentation;
   removingEnvironmentId: EnvironmentId | null;
+  startingEnvironmentId: EnvironmentId | null;
+  stoppingEnvironmentId: EnvironmentId | null;
   onConnect: (environmentId: EnvironmentId) => void;
+  onCancelStart: (environmentId: EnvironmentId) => void;
+  onStop: (environmentId: EnvironmentId) => void;
   onRemove: (environmentId: EnvironmentId) => void;
 };
 
 function SavedBackendListRow({
   environment,
   removingEnvironmentId,
+  startingEnvironmentId,
+  stoppingEnvironmentId,
   onConnect,
+  onCancelStart,
+  onStop,
   onRemove,
 }: SavedBackendListRowProps) {
   const environmentId = environment.environmentId;
   const connectionState = environment.connection.phase;
   const isConnected = connectionState === "connected";
   const isConnecting = connectionState === "connecting" || connectionState === "reconnecting";
+  const isStarting = startingEnvironmentId === environmentId;
+  const isStopping = stoppingEnvironmentId === environmentId;
+  const stopHookConfigured = environment.serverConfig?.settings.stopHookUrl != null;
   const stateDotClassName =
     connectionState === "connected"
       ? "bg-success"
@@ -1490,28 +1518,54 @@ function SavedBackendListRow({
                 <Button
                   size="xs"
                   variant="outline"
-                  disabled={removingEnvironmentId === environmentId}
+                  disabled={removingEnvironmentId === environmentId || isStarting}
                   onClick={() => void onRemove(environmentId)}
                 >
                   {removingEnvironmentId === environmentId ? "Removing…" : "Remove"}
                 </Button>
               ) : null}
-              <Button
-                size="xs"
-                variant="outline"
-                disabled={isConnecting || removingEnvironmentId === environmentId}
-                onClick={() =>
-                  void (isConnected ? onRemove(environmentId) : onConnect(environmentId))
-                }
-              >
-                {isConnected
-                  ? removingEnvironmentId === environmentId
-                    ? "Disconnecting…"
-                    : "Disconnect"
-                  : isConnecting
-                    ? "Connecting…"
-                    : "Connect"}
-              </Button>
+              {isConnected && stopHookConfigured ? (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        size="xs"
+                        variant="destructive-outline"
+                        disabled={isStopping}
+                        onClick={() => void onStop(environmentId)}
+                      >
+                        {isStopping ? "Stopping…" : "Stop"}
+                      </Button>
+                    }
+                  />
+                  <TooltipPopup side="top" className="max-w-80 whitespace-pre-wrap leading-tight">
+                    Ask the service managing this environment to stop the instance.
+                  </TooltipPopup>
+                </Tooltip>
+              ) : null}
+              {isStarting ? (
+                <Button size="xs" variant="outline" onClick={() => onCancelStart(environmentId)}>
+                  <Spinner className="size-3" />
+                  Cancel start
+                </Button>
+              ) : (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={isConnecting || removingEnvironmentId === environmentId}
+                  onClick={() =>
+                    void (isConnected ? onRemove(environmentId) : onConnect(environmentId))
+                  }
+                >
+                  {isConnected
+                    ? removingEnvironmentId === environmentId
+                      ? "Disconnecting…"
+                      : "Disconnect"
+                    : isConnecting
+                      ? "Connecting…"
+                      : "Connect"}
+                </Button>
+              )}
             </>
           )}
         </div>
@@ -1734,6 +1788,9 @@ export function ConnectionsSettings() {
   });
   const removeEnvironment = useAtomCommand(environmentCatalog.remove, { reportFailure: false });
   const retryEnvironment = useAtomCommand(environmentCatalog.retryNow, { reportFailure: false });
+  const runStopHookCommand = useAtomCommand(serverEnvironment.runStopHook, {
+    reportFailure: false,
+  });
   const primaryEnvironmentId = primaryEnvironment?.environmentId ?? null;
   const primarySessionState = usePrimarySessionState();
   const currentSessionScopes = desktopBridge
@@ -1811,6 +1868,10 @@ export function ConnectionsSettings() {
   const [isAddingSavedBackend, setIsAddingSavedBackend] = useState(false);
   const [removingSavedEnvironmentId, setRemovingSavedEnvironmentId] =
     useState<EnvironmentId | null>(null);
+  const [stoppingSavedEnvironmentId, setStoppingSavedEnvironmentId] =
+    useState<EnvironmentId | null>(null);
+  const [startHookRun, setStartHookRun] = useState<StartHookRunState | null>(null);
+  const startHookAbortRef = useRef<AbortController | null>(null);
   const [isUpdatingDesktopServerExposure, setIsUpdatingDesktopServerExposure] = useState(false);
   const [isDesktopServerExposureDialogOpen, setIsDesktopServerExposureDialogOpen] = useState(false);
   const [isUpdatingTailscaleServe, setIsUpdatingTailscaleServe] = useState(false);
@@ -2226,7 +2287,7 @@ export function ConnectionsSettings() {
     savedBackendSshUsername,
   ]);
 
-  const handleConnectSavedBackend = useCallback(
+  const connectSavedBackendNow = useCallback(
     async (environmentId: EnvironmentId) => {
       setSavedBackendError(null);
       const result = await retryEnvironment(environmentId);
@@ -2244,6 +2305,128 @@ export function ConnectionsSettings() {
       }
     },
     [retryEnvironment],
+  );
+
+  const finishStartHook = useCallback(() => {
+    startHookAbortRef.current = null;
+    setStartHookRun(null);
+  }, []);
+
+  const failStartHook = useCallback(
+    (error: unknown, aborted: boolean) => {
+      finishStartHook();
+      if (aborted) return;
+      const message = error instanceof Error ? error.message : "Failed to start the instance.";
+      setSavedBackendError(message);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Could not start instance",
+          description: message,
+        }),
+      );
+    },
+    [finishStartHook],
+  );
+
+  const settleStartHookStep = useCallback(
+    async (
+      run: Pick<StartHookRunState, "environmentId" | "url" | "label">,
+      step: StartHookStep,
+      controller: AbortController,
+    ) => {
+      if (step.kind === "form") {
+        setStartHookRun({ ...run, phase: "form", form: step.form, submitting: false });
+        return;
+      }
+      if (step.kind === "poll") {
+        setStartHookRun({ ...run, phase: "starting", form: null, submitting: false });
+        await pollStartHookUntilReady(step.poll, { signal: controller.signal });
+      }
+      finishStartHook();
+      await connectSavedBackendNow(run.environmentId);
+    },
+    [connectSavedBackendNow, finishStartHook],
+  );
+
+  const handleConnectSavedBackend = useCallback(
+    async (environmentId: EnvironmentId) => {
+      const environment = environments.find((entry) => entry.environmentId === environmentId);
+      const startHookUrl = environment?.serverConfig?.settings.startHookUrl ?? null;
+      if (startHookUrl === null) {
+        await connectSavedBackendNow(environmentId);
+        return;
+      }
+      startHookAbortRef.current?.abort();
+      const controller = new AbortController();
+      startHookAbortRef.current = controller;
+      const run = { environmentId, url: startHookUrl, label: environment?.label ?? "environment" };
+      setSavedBackendError(null);
+      setStartHookRun({ ...run, phase: "requesting", form: null, submitting: false });
+      try {
+        const step = await requestStartHook(startHookUrl, { signal: controller.signal });
+        await settleStartHookStep(run, step, controller);
+      } catch (error) {
+        failStartHook(error, controller.signal.aborted);
+      }
+    },
+    [environments, connectSavedBackendNow, settleStartHookStep, failStartHook],
+  );
+
+  const handleCancelStartHook = useCallback(() => {
+    startHookAbortRef.current?.abort();
+    finishStartHook();
+  }, [finishStartHook]);
+
+  const handleSubmitStartHookForm = useCallback(
+    async (values: ReadonlyArray<string>) => {
+      const run = startHookRun;
+      const controller = startHookAbortRef.current;
+      if (run === null || controller === null) return;
+      setStartHookRun({ ...run, submitting: true });
+      try {
+        const step = await submitStartHookForm(run.url, values, { signal: controller.signal });
+        await settleStartHookStep(run, step, controller);
+      } catch (error) {
+        failStartHook(error, controller.signal.aborted);
+      }
+    },
+    [startHookRun, settleStartHookStep, failStartHook],
+  );
+
+  const handleStopSavedBackend = useCallback(
+    async (environmentId: EnvironmentId) => {
+      setStoppingSavedEnvironmentId(environmentId);
+      const result = await runStopHookCommand({ environmentId, input: {} });
+      setStoppingSavedEnvironmentId(null);
+      if (result._tag === "Failure") {
+        if (isAtomCommandInterrupted(result)) return;
+        const error = squashAtomCommandFailure(result);
+        const message = error instanceof Error ? error.message : "Failed to stop the instance.";
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Could not stop instance",
+            description: message,
+          }),
+        );
+        return;
+      }
+      toastManager.add(
+        result.value.outcome === "gone"
+          ? {
+              type: "success",
+              title: "Stop hook removed",
+              description: "The management service no longer offers this stop hook.",
+            }
+          : {
+              type: "success",
+              title: "Stop requested",
+              description: "The management service is stopping this instance.",
+            },
+      );
+    },
+    [runStopHookCommand],
   );
 
   const handleRemoveSavedBackend = useCallback(
@@ -3422,10 +3605,23 @@ export function ConnectionsSettings() {
             key={environment.environmentId}
             environment={environment}
             removingEnvironmentId={removingSavedEnvironmentId}
+            startingEnvironmentId={startHookRun?.environmentId ?? null}
+            stoppingEnvironmentId={stoppingSavedEnvironmentId}
             onConnect={handleConnectSavedBackend}
+            onCancelStart={handleCancelStartHook}
+            onStop={handleStopSavedBackend}
             onRemove={handleRemoveSavedBackend}
           />
         ))}
+        {startHookRun !== null && startHookRun.phase === "form" && startHookRun.form !== null ? (
+          <StartHookFormDialog
+            environmentLabel={startHookRun.label}
+            form={startHookRun.form}
+            submitting={startHookRun.submitting}
+            onSubmit={(values) => void handleSubmitStartHookForm(values)}
+            onCancel={handleCancelStartHook}
+          />
+        ) : null}
         <CloudRemoteEnvironmentRows
           primaryEnvironmentId={primaryEnvironmentId}
           savedEnvironments={savedEnvironments}
