@@ -1,6 +1,6 @@
 import {
+  ServerStopHookInvalidUrlError,
   ServerStopHookNotConfiguredError,
-  ServerStopHookRequestError,
   ServerStopHookUnexpectedStatusError,
 } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
@@ -30,7 +30,7 @@ const makeHookEndpointLayer = (requests: Array<RecordedHookRequest>, status: num
   );
 
 const isNotConfiguredError = Schema.is(ServerStopHookNotConfiguredError);
-const isRequestError = Schema.is(ServerStopHookRequestError);
+const isInvalidUrlError = Schema.is(ServerStopHookInvalidUrlError);
 const isUnexpectedStatusError = Schema.is(ServerStopHookUnexpectedStatusError);
 
 it.effect("DELETEs the stop hook and reports the instance as stopping on 204", () =>
@@ -124,7 +124,26 @@ it.effect("refuses a stop hook that is not an http(s) URL without issuing a requ
       ),
       Effect.flip,
     );
-    assert.isTrue(isRequestError(failure));
+    assert.isTrue(isInvalidUrlError(failure));
+    assert.equal(isInvalidUrlError(failure) ? failure.protocol : null, "file:");
+    assert.deepEqual(requests, []);
+  }),
+);
+
+it.effect("reports an unparsable stop hook URL as invalid rather than a failed request", () =>
+  Effect.gen(function* () {
+    const requests: Array<RecordedHookRequest> = [];
+    const failure = yield* InstanceHooks.runStopHook.pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          makeHookEndpointLayer(requests, 204),
+          ServerSettings.layerTest({ stopHookUrl: "not a url" }),
+        ),
+      ),
+      Effect.flip,
+    );
+    assert.isTrue(isInvalidUrlError(failure));
+    assert.equal(isInvalidUrlError(failure) ? failure.protocol : "unset", null);
     assert.deepEqual(requests, []);
   }),
 );

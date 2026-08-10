@@ -23,6 +23,10 @@ export type StartHookStep =
   | { readonly kind: "poll"; readonly poll: StartHookPollState }
   | { readonly kind: "form"; readonly form: StartHookForm };
 
+/**
+ * Messages are derived from structural facts only. Underlying failures and
+ * third-party response text stay on `cause` so they never reach a toast.
+ */
 export class StartHookError extends Error {}
 
 export type StartHookInputComponent = StartHookSelectComponent | StartHookTextComponent;
@@ -69,7 +73,8 @@ async function interpretStartHookResponse(response: Response): Promise<StartHook
       body = await response.json();
     } catch (error) {
       throw new StartHookError(
-        `The start hook returned status ${response.status} without a readable JSON body: ${String(error)}`,
+        `The start hook returned status ${response.status} without a readable JSON body.`,
+        { cause: error },
       );
     }
   };
@@ -78,9 +83,9 @@ async function interpretStartHookResponse(response: Response): Promise<StartHook
     try {
       return { kind: "poll", poll: decodePollState(body) };
     } catch (error) {
-      throw new StartHookError(
-        `The start hook returned a malformed poll response: ${String(error)}`,
-      );
+      throw new StartHookError("The start hook returned a malformed poll response.", {
+        cause: error,
+      });
     }
   }
   if (response.status === 400) {
@@ -88,9 +93,9 @@ async function interpretStartHookResponse(response: Response): Promise<StartHook
     try {
       return { kind: "form", form: decodeForm(body) };
     } catch (error) {
-      throw new StartHookError(
-        `The start hook returned a malformed form response: ${String(error)}`,
-      );
+      throw new StartHookError("The start hook returned a malformed form response.", {
+        cause: error,
+      });
     }
   }
   throw new StartHookError(`The start hook responded with unexpected status ${response.status}.`);
@@ -111,7 +116,7 @@ async function postStartHook(
     });
   } catch (error) {
     if (options.signal?.aborted) throw error;
-    throw new StartHookError(`Could not reach the start hook: ${String(error)}`);
+    throw new StartHookError("Could not reach the start hook.", { cause: error });
   }
   return interpretStartHookResponse(response);
 }
@@ -173,12 +178,14 @@ export async function pollStartHookUntilReady(
       response = await fetchImpl(poll.poll_url, { method: "GET", signal: options.signal ?? null });
     } catch (error) {
       if (options.signal?.aborted) throw error;
-      throw new StartHookError(`Could not poll the start hook: ${String(error)}`);
+      throw new StartHookError("Could not poll the start hook.", { cause: error });
     }
     if (response.status === 204) {
       return;
     }
-    if (response.status >= 400) {
+    // Only a plain 200 means "still starting". Anything else — an error, a
+    // redirect, a 304 — is a misconfigured endpoint, not progress.
+    if (response.status !== 200) {
       throw new StartHookError(`Polling the start hook failed with status ${response.status}.`);
     }
     if (now() + intervalMs > deadlineAt) {

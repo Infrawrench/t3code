@@ -88,6 +88,20 @@ export class ServerStopHookNotConfiguredError extends Schema.TaggedErrorClass<Se
   }
 }
 
+export class ServerStopHookInvalidUrlError extends Schema.TaggedErrorClass<ServerStopHookInvalidUrlError>()(
+  "ServerStopHookInvalidUrlError",
+  {
+    /** Parsed scheme of the rejected URL, or null when it did not parse. */
+    protocol: Schema.NullOr(Schema.String),
+  },
+) {
+  override get message(): string {
+    return this.protocol === null
+      ? "The configured stop hook is not a valid URL."
+      : `The configured stop hook uses the unsupported scheme ${this.protocol}.`;
+  }
+}
+
 export class ServerStopHookRequestError extends Schema.TaggedErrorClass<ServerStopHookRequestError>()(
   "ServerStopHookRequestError",
   {
@@ -112,6 +126,7 @@ export class ServerStopHookUnexpectedStatusError extends Schema.TaggedErrorClass
 
 export const ServerStopHookError = Schema.Union([
   ServerStopHookNotConfiguredError,
+  ServerStopHookInvalidUrlError,
   ServerStopHookRequestError,
   ServerStopHookUnexpectedStatusError,
 ]);

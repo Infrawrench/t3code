@@ -42,8 +42,9 @@ in [`apps/web/src/components/settings/startHook.ts`](../../apps/web/src/componen
    back to the start hook URL as a JSON array (input components only, in component order). The
    response is again interpreted per step 2, so an endpoint can re-prompt with another `400`.
 4. On a poll response, the client GETs `poll_url` every `retry_secs` seconds (clamped to 1–60s,
-   overall deadline 10 minutes) until a `204` says the instance is up. Error statuses (>= 400) fail
-   the run; "still starting" is any other success status.
+   wall-clock deadline 10 minutes) until a `204` says the instance is up. Only a plain `200` means
+   "still starting"; every other status, including redirects and `304`, fails the run rather than
+   being retried.
 5. The normal connect flow runs.
 
 The form response shape:
@@ -95,8 +96,9 @@ carry a `stopHookUrl`; clicking it calls the `server.runStopHook` RPC (scope
   streams to clients and removes the Stop button) and reports `outcome: "gone"`. The clear is
   compare-and-set: a hook reconfigured while the request was in flight is left alone.
 - Anything else fails the RPC with one of the `ServerStopHookError` union members
-  (`ServerStopHookNotConfiguredError`, `ServerStopHookRequestError`,
-  `ServerStopHookUnexpectedStatusError`). Only `http:`/`https:` URLs are dialed.
+  (`ServerStopHookNotConfiguredError`, `ServerStopHookInvalidUrlError`,
+  `ServerStopHookRequestError`, `ServerStopHookUnexpectedStatusError`). Only `http:`/`https:` URLs
+  are dialed; anything else fails as invalid without a request.
 
 After a stop, the saved environment keeps its registration, credentials, and cached config; the
 connection drops like any other server that went away, and the next Connect click runs the start

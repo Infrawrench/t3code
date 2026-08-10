@@ -96,6 +96,22 @@ describe("requestStartHook", () => {
       }),
     ).rejects.toBeInstanceOf(StartHookError);
   });
+
+  it("keeps third-party response text out of the message and on the cause", async () => {
+    const failure = await requestStartHook("https://mgmt.test/start", {
+      fetchImpl: makeFetch([
+        new Response("secret-ish upstream detail", {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      ]),
+    }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(StartHookError);
+    const error = failure as StartHookError;
+    expect(error.message).toBe("The start hook returned status 200 without a readable JSON body.");
+    expect(error.message).not.toContain("secret-ish");
+    expect(error.cause).toBeDefined();
+  });
 });
 
 describe("submitStartHookForm", () => {
@@ -120,7 +136,7 @@ describe("pollStartHookUntilReady", () => {
         fetchImpl: makeFetch(
           [
             new Response(null, { status: 200 }),
-            new Response(null, { status: 202 }),
+            new Response(null, { status: 200 }),
             new Response(null, { status: 204 }),
           ],
           requests,
@@ -130,6 +146,20 @@ describe("pollStartHookUntilReady", () => {
     );
     expect(requests).toHaveLength(3);
     expect(requests.every((request) => request.method === "GET")).toBe(true);
+  });
+
+  it("fails fast on a non-200 success status instead of retrying it", async () => {
+    const requests: Array<RecordedRequest> = [];
+    await expect(
+      pollStartHookUntilReady(
+        { poll_url: "https://mgmt.test/poll/1", retry_secs: 5 },
+        {
+          fetchImpl: makeFetch([new Response(null, { status: 304 })], requests),
+          sleep: noSleep,
+        },
+      ),
+    ).rejects.toThrow("status 304");
+    expect(requests).toHaveLength(1);
   });
 
   it("gives up when the deadline passes, counting slow requests against it", async () => {

@@ -2,6 +2,7 @@ import * as Effect from "effect/Effect";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import {
+  ServerStopHookInvalidUrlError,
   ServerStopHookNotConfiguredError,
   ServerStopHookRequestError,
   ServerStopHookUnexpectedStatusError,
@@ -12,13 +13,17 @@ import * as ServerSettings from "./serverSettings.ts";
 
 const STOP_HOOK_TIMEOUT = "20 seconds";
 
-function isHttpUrl(url: string): boolean {
+/** Null when the hook is a dialable http(s) URL, otherwise the rejection. */
+function rejectNonHttpUrl(url: string): ServerStopHookInvalidUrlError | null {
+  let protocol: string;
   try {
-    const parsed = new URL(url);
-    return parsed.protocol === "http:" || parsed.protocol === "https:";
+    protocol = new URL(url).protocol;
   } catch {
-    return false;
+    return new ServerStopHookInvalidUrlError({ protocol: null });
   }
+  return protocol === "http:" || protocol === "https:"
+    ? null
+    : new ServerStopHookInvalidUrlError({ protocol });
 }
 
 /**
@@ -34,10 +39,9 @@ export const runStopHook = Effect.gen(function* () {
   if (stopHookUrl === null) {
     return yield* new ServerStopHookNotConfiguredError({});
   }
-  if (!isHttpUrl(stopHookUrl)) {
-    return yield* new ServerStopHookRequestError({
-      cause: new Error("The configured stop hook is not an http(s) URL."),
-    });
+  const invalidUrl = rejectNonHttpUrl(stopHookUrl);
+  if (invalidUrl !== null) {
+    return yield* invalidUrl;
   }
   const response = yield* httpClient.execute(HttpClientRequest.delete(stopHookUrl)).pipe(
     Effect.timeout(STOP_HOOK_TIMEOUT),
