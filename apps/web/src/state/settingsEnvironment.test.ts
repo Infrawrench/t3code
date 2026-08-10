@@ -1,7 +1,10 @@
 import { EnvironmentId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { resolveSettingsEnvironmentId } from "./settingsEnvironment";
+import {
+  filterConnectedCatalogEnvironmentIds,
+  resolveSettingsEnvironmentId,
+} from "./settingsEnvironment";
 
 const primary = EnvironmentId.make("primary");
 const relayA = EnvironmentId.make("relay-a");
@@ -20,5 +23,24 @@ describe("resolveSettingsEnvironmentId", () => {
 
   it("returns null before the catalog hydrates", () => {
     expect(resolveSettingsEnvironmentId(null, [])).toBeNull();
+  });
+});
+
+describe("filterConnectedCatalogEnvironmentIds", () => {
+  it("keeps catalog order while dropping offline devices", () => {
+    const connected = new Set([relayB]);
+    expect(
+      filterConnectedCatalogEnvironmentIds([relayA, relayB], (id) => connected.has(id)),
+    ).toEqual([relayB]);
+  });
+
+  it("lets the fallback skip a stale offline head entry", () => {
+    const connected = new Set([relayB]);
+    expect(
+      resolveSettingsEnvironmentId(
+        null,
+        filterConnectedCatalogEnvironmentIds([relayA, relayB], (id) => connected.has(id)),
+      ),
+    ).toBe(relayB);
   });
 });
