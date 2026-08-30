@@ -15,12 +15,16 @@ const makeTempDir = Effect.gen(function* () {
   return yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3code-worktree-artifacts-" });
 });
 
-const writeFile = Effect.fn("writeFile")(function* (cwd: string, relativePath: string) {
+const writeFile = Effect.fn("writeFile")(function* (
+  cwd: string,
+  relativePath: string,
+  contents = "",
+) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const absolutePath = path.join(cwd, relativePath);
   yield* fileSystem.makeDirectory(path.dirname(absolutePath), { recursive: true });
-  yield* fileSystem.writeFileString(absolutePath, "");
+  yield* fileSystem.writeFileString(absolutePath, contents);
 });
 
 const makeDir = Effect.fn("makeDir")(function* (cwd: string, relativePath: string) {
@@ -138,13 +142,41 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("worktreeArtifacts",
   });
 
   describe("isLinkedWorktreePath", () => {
-    it.effect("recognizes the .git pointer file of a linked worktree", () =>
+    it.effect("recognizes a linked worktree via its gitdir's commondir file", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const path = yield* Path.Path;
+          const repo = yield* makeTempDir;
+          yield* writeFile(repo, ".git/worktrees/branch/commondir", "../..\n");
+          const cwd = yield* makeTempDir;
+          yield* writeFile(cwd, ".git", `gitdir: ${path.join(repo, ".git/worktrees/branch")}\n`);
+
+          expect(yield* isLinkedWorktreePath(cwd)).toBe(true);
+        }),
+      ),
+    );
+
+    it.effect("rejects a separate-git-dir primary checkout", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const path = yield* Path.Path;
+          const gitDir = yield* makeTempDir;
+          yield* writeFile(gitDir, "HEAD", "ref: refs/heads/main\n");
+          const cwd = yield* makeTempDir;
+          yield* writeFile(cwd, ".git", `gitdir: ${path.join(gitDir)}\n`);
+
+          expect(yield* isLinkedWorktreePath(cwd)).toBe(false);
+        }),
+      ),
+    );
+
+    it.effect("rejects a malformed .git pointer file", () =>
       Effect.scoped(
         Effect.gen(function* () {
           const cwd = yield* makeTempDir;
-          yield* writeFile(cwd, ".git");
+          yield* writeFile(cwd, ".git", "not a pointer\n");
 
-          expect(yield* isLinkedWorktreePath(cwd)).toBe(true);
+          expect(yield* isLinkedWorktreePath(cwd)).toBe(false);
         }),
       ),
     );

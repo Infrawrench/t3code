@@ -33,19 +33,39 @@ const MAX_SCAN_DEPTH = 8;
 /**
  * Whether `worktreePath` points at a linked git worktree.
  *
- * Linked worktrees keep a `.git` pointer file where a primary checkout has a
- * `.git` directory, which makes this a cheap guard against ever cleaning a
- * project's main checkout.
+ * Linked worktrees keep a `.git` pointer file, but so does a primary
+ * checkout cloned with `--separate-git-dir`, so the entry type alone is not
+ * enough. The pointer's `gitdir:` target settles it: a linked worktree's
+ * private git dir holds a `commondir` file referencing the shared `.git`,
+ * while a detached full git dir has none. Anything that fails to parse
+ * reads as "not a worktree" so the cleanup never guesses.
  */
 export const isLinkedWorktreePath = Effect.fn("isLinkedWorktreePath")(function* (
   worktreePath: string,
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const info = yield* fileSystem
-    .stat(path.join(worktreePath, ".git"))
+  const pointerPath = path.join(worktreePath, ".git");
+  const info = yield* fileSystem.stat(pointerPath).pipe(Effect.orElseSucceed(() => null));
+  if (info === null || info.type !== "File") {
+    return false;
+  }
+
+  const pointer = yield* fileSystem
+    .readFileString(pointerPath)
     .pipe(Effect.orElseSucceed(() => null));
-  return info !== null && info.type === "File";
+  const gitDirMatch = pointer?.match(/^gitdir:\s*(.+)\s*$/m);
+  if (!gitDirMatch) {
+    return false;
+  }
+  const gitDir = path.isAbsolute(gitDirMatch[1]!)
+    ? gitDirMatch[1]!
+    : path.join(worktreePath, gitDirMatch[1]!);
+
+  const commonDirInfo = yield* fileSystem
+    .stat(path.join(gitDir, "commondir"))
+    .pipe(Effect.orElseSucceed(() => null));
+  return commonDirInfo !== null && commonDirInfo.type === "File";
 });
 
 /**
