@@ -12,6 +12,8 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
+import * as VcsProcess from "../vcs/VcsProcess.ts";
+
 // Directory names that are always safe to delete wherever they appear.
 const ARTIFACT_DIRECTORY_NAMES: ReadonlySet<string> = new Set([
   "node_modules",
@@ -37,8 +39,11 @@ const MAX_SCAN_DEPTH = 8;
  * checkout cloned with `--separate-git-dir`, so the entry type alone is not
  * enough. The pointer's `gitdir:` target settles it: a linked worktree's
  * private git dir holds a `commondir` file referencing the shared `.git`,
- * while a detached full git dir has none. Anything that fails to parse
- * reads as "not a worktree" so the cleanup never guesses.
+ * while a detached full git dir has none. The private dir's `gitdir`
+ * back-reference must also resolve to this worktree's own `.git` pointer,
+ * so a pointer borrowed from another worktree does not vouch for a
+ * directory git never registered. Anything that fails to parse reads as
+ * "not a worktree" so the cleanup never guesses.
  */
 export const isLinkedWorktreePath = Effect.fn("isLinkedWorktreePath")(function* (
   worktreePath: string,
@@ -65,7 +70,26 @@ export const isLinkedWorktreePath = Effect.fn("isLinkedWorktreePath")(function* 
   const commonDirInfo = yield* fileSystem
     .stat(path.join(gitDir, "commondir"))
     .pipe(Effect.orElseSucceed(() => null));
-  return commonDirInfo !== null && commonDirInfo.type === "File";
+  if (commonDirInfo === null || commonDirInfo.type !== "File") {
+    return false;
+  }
+
+  const backReference = yield* fileSystem
+    .readFileString(path.join(gitDir, "gitdir"))
+    .pipe(Effect.orElseSucceed(() => null));
+  const backReferencePath = backReference?.trim();
+  if (!backReferencePath) {
+    return false;
+  }
+  const canonicalBackReference = yield* fileSystem
+    .realPath(
+      path.isAbsolute(backReferencePath) ? backReferencePath : path.join(gitDir, backReferencePath),
+    )
+    .pipe(Effect.orElseSucceed(() => null));
+  const canonicalPointer = yield* fileSystem
+    .realPath(pointerPath)
+    .pipe(Effect.orElseSucceed(() => null));
+  return canonicalBackReference !== null && canonicalBackReference === canonicalPointer;
 });
 
 /**
@@ -137,20 +161,70 @@ export const findWorktreeArtifactDirectories = Effect.fn("findWorktreeArtifactDi
 );
 
 /**
+ * Whether git vouches that an artifact directory holds only regenerable
+ * contents: the directory must be ignored and contain no tracked files.
+ * A failed git invocation reads as "not verified" so nothing is deleted on
+ * guesswork.
+ */
+const isVerifiedRegenerable = Effect.fn("isVerifiedRegenerable")(function* (input: {
+  readonly worktreePath: string;
+  readonly relativePath: string;
+}) {
+  const vcsProcess = yield* VcsProcess.VcsProcess;
+  const checkIgnore = yield* vcsProcess
+    .run({
+      operation: "worktreeArtifacts.checkIgnore",
+      command: "git",
+      args: ["check-ignore", "-q", "--", input.relativePath],
+      cwd: input.worktreePath,
+      allowNonZeroExit: true,
+    })
+    .pipe(Effect.orElseSucceed(() => null));
+  if (checkIgnore?.exitCode !== 0) {
+    return false;
+  }
+
+  const trackedFiles = yield* vcsProcess
+    .run({
+      operation: "worktreeArtifacts.listTrackedFiles",
+      command: "git",
+      args: ["ls-files", "--", input.relativePath],
+      cwd: input.worktreePath,
+    })
+    .pipe(Effect.orElseSucceed(() => null));
+  return trackedFiles !== null && trackedFiles.stdout.trim() === "";
+});
+
+/**
  * Remove all regenerable build-artifact directories from a worktree.
  *
- * Removal is best-effort per directory: one undeletable artifact does not
- * abort the rest of the sweep.
+ * A directory is only deleted after git verifies it is ignored and holds no
+ * tracked files; anything else lands in `skipped` untouched. Removal is
+ * best-effort per directory: one undeletable artifact does not abort the
+ * rest of the sweep.
  */
 export const removeWorktreeArtifacts = Effect.fn("removeWorktreeArtifacts")(function* (
   worktreePath: string,
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
-  const artifacts = yield* findWorktreeArtifactDirectories(worktreePath);
+  const path = yield* Path.Path;
+  // The scan returns canonical paths, so relative paths and the git cwd must
+  // start from the same canonical root.
+  const root = yield* fileSystem.realPath(worktreePath);
+  const artifacts = yield* findWorktreeArtifactDirectories(root);
 
   const removed: Array<string> = [];
   const failed: Array<string> = [];
+  const skipped: Array<string> = [];
   for (const artifact of artifacts) {
+    const verified = yield* isVerifiedRegenerable({
+      worktreePath: root,
+      relativePath: path.relative(root, artifact),
+    });
+    if (!verified) {
+      skipped.push(artifact);
+      continue;
+    }
     const succeeded = yield* fileSystem.remove(artifact, { recursive: true, force: true }).pipe(
       Effect.as(true),
       Effect.orElseSucceed(() => false),
@@ -162,5 +236,5 @@ export const removeWorktreeArtifacts = Effect.fn("removeWorktreeArtifacts")(func
     }
   }
 
-  return { removed, failed };
+  return { removed, failed, skipped };
 });

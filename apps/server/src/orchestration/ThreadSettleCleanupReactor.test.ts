@@ -21,16 +21,13 @@ import {
   type ProjectionThread,
   type ProjectionThreadRepositoryShape,
 } from "../persistence/Services/ProjectionThreads.ts";
-import { layerTest as serverSettingsLayerTest } from "../serverSettings.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as VcsProcess from "../vcs/VcsProcess.ts";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
 } from "./Services/OrchestrationEngine.ts";
-import {
-  isWorktreeSharedWithAnotherThread,
-  layer as reactorLayer,
-  ThreadSettleCleanupReactor,
-} from "./ThreadSettleCleanupReactor.ts";
+import * as ThreadSettleCleanupReactorModule from "./ThreadSettleCleanupReactor.ts";
 
 describe("isWorktreeSharedWithAnotherThread", () => {
   const target = {
@@ -46,7 +43,9 @@ describe("isWorktreeSharedWithAnotherThread", () => {
       { threadId: otherId, worktreePath: null, deletedAt: null },
     ];
 
-    expect(isWorktreeSharedWithAnotherThread(threads, target)).toBe(false);
+    expect(
+      ThreadSettleCleanupReactorModule.isWorktreeSharedWithAnotherThread(threads, target),
+    ).toBe(false);
   });
 
   it("is true when a live thread shares the worktree", () => {
@@ -55,7 +54,9 @@ describe("isWorktreeSharedWithAnotherThread", () => {
       { threadId: otherId, worktreePath: target.worktreePath, deletedAt: null },
     ];
 
-    expect(isWorktreeSharedWithAnotherThread(threads, target)).toBe(true);
+    expect(
+      ThreadSettleCleanupReactorModule.isWorktreeSharedWithAnotherThread(threads, target),
+    ).toBe(true);
   });
 
   it("ignores deleted threads sharing the worktree", () => {
@@ -64,12 +65,17 @@ describe("isWorktreeSharedWithAnotherThread", () => {
       { threadId: otherId, worktreePath: target.worktreePath, deletedAt: "2026-08-30T00:00:00Z" },
     ];
 
-    expect(isWorktreeSharedWithAnotherThread(threads, target)).toBe(false);
+    expect(
+      ThreadSettleCleanupReactorModule.isWorktreeSharedWithAnotherThread(threads, target),
+    ).toBe(false);
   });
 
   it("is false when the target has no worktree", () => {
     expect(
-      isWorktreeSharedWithAnotherThread([], { threadId: target.threadId, worktreePath: null }),
+      ThreadSettleCleanupReactorModule.isWorktreeSharedWithAnotherThread([], {
+        threadId: target.threadId,
+        worktreePath: null,
+      }),
     ).toBe(false);
   });
 });
@@ -103,8 +109,18 @@ describe("ThreadSettleCleanupReactor cleanup gates", () => {
       ...overrides,
     }) as unknown as ProjectionThread;
 
-  // A faithful linked-worktree layout: a .git pointer file whose gitdir
-  // target carries the commondir file, plus a node_modules artifact.
+  const runGit = Effect.fn("runGit")(function* (cwd: string, args: ReadonlyArray<string>) {
+    const vcsProcess = yield* VcsProcess.VcsProcess;
+    yield* vcsProcess.run({
+      operation: "ThreadSettleCleanupReactor.test.runGit",
+      command: "git",
+      args,
+      cwd,
+    });
+  });
+
+  // A real repository ignoring node_modules; "linked" hands back an actual
+  // `git worktree add` checkout, "primary" the repo checkout itself.
   const makeWorktreeFixture = (kind: "linked" | "primary") =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -112,16 +128,19 @@ describe("ThreadSettleCleanupReactor cleanup gates", () => {
       const repo = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3code-settle-reactor-repo-",
       });
-      const worktree = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "t3code-settle-reactor-wt-",
-      });
+      yield* runGit(repo, ["init", "--initial-branch=main"]);
+      yield* runGit(repo, ["config", "user.email", "test@example.com"]);
+      yield* runGit(repo, ["config", "user.name", "Test User"]);
+      yield* fileSystem.writeFileString(path.join(repo, ".gitignore"), "node_modules/\n");
+      yield* runGit(repo, ["add", "."]);
+      yield* runGit(repo, ["commit", "-m", "init"]);
+      let worktree = repo;
       if (kind === "linked") {
-        const gitDir = path.join(repo, ".git/worktrees/branch");
-        yield* fileSystem.makeDirectory(gitDir, { recursive: true });
-        yield* fileSystem.writeFileString(path.join(gitDir, "commondir"), "../..\n");
-        yield* fileSystem.writeFileString(path.join(worktree, ".git"), `gitdir: ${gitDir}\n`);
-      } else {
-        yield* fileSystem.makeDirectory(path.join(worktree, ".git"), { recursive: true });
+        const worktreeParent = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3code-settle-reactor-wt-",
+        });
+        worktree = path.join(worktreeParent, "worktree");
+        yield* runGit(repo, ["worktree", "add", worktree, "-b", "settle-cleanup-test"]);
       }
       yield* fileSystem.makeDirectory(path.join(worktree, "node_modules/pkg"), {
         recursive: true,
@@ -151,22 +170,24 @@ describe("ThreadSettleCleanupReactor cleanup gates", () => {
           getById: () => Effect.succeed(Option.some(row)),
           listByProjectId: () => Effect.succeed(rows),
         } as unknown as ProjectionThreadRepositoryShape;
-        const layer = reactorLayer.pipe(
+        const layer = ThreadSettleCleanupReactorModule.layer.pipe(
           Layer.provide(Layer.succeed(OrchestrationEngineService, engine)),
           Layer.provide(Layer.succeed(ProjectionThreadRepository, repository)),
-          Layer.provide(serverSettingsLayerTest({ cleanWorktreeArtifactsOnSettle: input.enabled })),
-          Layer.provide(NodeServices.layer),
+          Layer.provide(
+            ServerSettings.layerTest({ cleanWorktreeArtifactsOnSettle: input.enabled }),
+          ),
+          Layer.provide(VcsProcess.layer.pipe(Layer.provideMerge(NodeServices.layer))),
         );
 
         yield* Effect.gen(function* () {
-          const reactor = yield* ThreadSettleCleanupReactor;
+          const reactor = yield* ThreadSettleCleanupReactorModule.ThreadSettleCleanupReactor;
           yield* reactor.start();
           yield* reactor.drainThrough(settledEvent.sequence);
         }).pipe(Effect.provide(layer), Effect.scoped);
 
         return yield* fileSystem.exists(path.join(worktree, "node_modules"));
       }),
-    ).pipe(Effect.provide(NodeServices.layer));
+    ).pipe(Effect.provide(VcsProcess.layer.pipe(Layer.provideMerge(NodeServices.layer))));
 
   effectIt.effect("cleans artifacts when enabled and every guard passes", () =>
     Effect.gen(function* () {

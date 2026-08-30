@@ -2,13 +2,17 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it, describe, expect } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 
+import * as VcsProcess from "../vcs/VcsProcess.ts";
 import {
   findWorktreeArtifactDirectories,
   isLinkedWorktreePath,
   removeWorktreeArtifacts,
 } from "./worktreeArtifacts.ts";
+
+const TestLayer = VcsProcess.layer.pipe(Layer.provideMerge(NodeServices.layer));
 
 const makeTempDir = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
@@ -33,13 +37,45 @@ const makeDir = Effect.fn("makeDir")(function* (cwd: string, relativePath: strin
   yield* fileSystem.makeDirectory(path.join(cwd, relativePath), { recursive: true });
 });
 
+const runGit = Effect.fn("runGit")(function* (cwd: string, args: ReadonlyArray<string>) {
+  const vcsProcess = yield* VcsProcess.VcsProcess;
+  yield* vcsProcess.run({
+    operation: "worktreeArtifacts.test.runGit",
+    command: "git",
+    args,
+    cwd,
+  });
+});
+
+/**
+ * A real repository whose default branch commits `.gitignore` entries, plus
+ * a real linked worktree carrying regenerable artifacts.
+ */
+const makeRepoWithWorktree = Effect.fn("makeRepoWithWorktree")(function* (input: {
+  readonly gitignore: string;
+}) {
+  const path = yield* Path.Path;
+  const repo = yield* makeTempDir;
+  const worktreeParent = yield* makeTempDir;
+  const worktree = path.join(worktreeParent, "worktree");
+  yield* runGit(repo, ["init", "--initial-branch=main"]);
+  yield* runGit(repo, ["config", "user.email", "test@example.com"]);
+  yield* runGit(repo, ["config", "user.name", "Test User"]);
+  yield* writeFile(repo, ".gitignore", input.gitignore);
+  yield* writeFile(repo, "README.md", "hello\n");
+  yield* runGit(repo, ["add", "."]);
+  yield* runGit(repo, ["commit", "-m", "init"]);
+  yield* runGit(repo, ["worktree", "add", worktree, "-b", "artifact-cleanup-test"]);
+  return { repo, worktree };
+});
+
 const relativeArtifacts = Effect.fn("relativeArtifacts")(function* (cwd: string) {
   const path = yield* Path.Path;
   const found = yield* findWorktreeArtifactDirectories(cwd);
   return found.map((absolute) => path.relative(cwd, absolute)).sort();
 });
 
-it.layer(NodeServices.layer, { excludeTestServices: true })("worktreeArtifacts", (it) => {
+it.layer(TestLayer, { excludeTestServices: true })("worktreeArtifacts", (it) => {
   describe("findWorktreeArtifactDirectories", () => {
     it.effect("finds node_modules and framework caches at any depth", () =>
       Effect.scoped(
@@ -115,43 +151,95 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("worktreeArtifacts",
   });
 
   describe("removeWorktreeArtifacts", () => {
-    it.effect("removes artifacts and keeps source files", () =>
+    it.effect("removes git-verified regenerable artifacts and keeps source files", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const { worktree } = yield* makeRepoWithWorktree({
+            gitignore: "node_modules/\ntarget/\n",
+          });
+          yield* writeFile(worktree, "node_modules/pkg/index.js", "");
+          yield* writeFile(worktree, "Cargo.toml", "[package]\n");
+          yield* makeDir(worktree, "target/release");
+
+          const result = yield* removeWorktreeArtifacts(worktree);
+
+          expect(result.failed).toEqual([]);
+          expect(result.skipped).toEqual([]);
+          expect(result.removed.map((absolute) => path.basename(absolute)).sort()).toEqual([
+            "node_modules",
+            "target",
+          ]);
+          expect(yield* fileSystem.exists(path.join(worktree, "node_modules"))).toBe(false);
+          expect(yield* fileSystem.exists(path.join(worktree, "target"))).toBe(false);
+          expect(yield* fileSystem.exists(path.join(worktree, "README.md"))).toBe(true);
+        }),
+      ),
+    );
+
+    it.effect("skips artifact directories git does not verify as ignored", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const { worktree } = yield* makeRepoWithWorktree({ gitignore: "" });
+          yield* writeFile(worktree, "node_modules/pkg/index.js", "");
+
+          const result = yield* removeWorktreeArtifacts(worktree);
+
+          expect(result.removed).toEqual([]);
+          expect(result.skipped.map((absolute) => path.basename(absolute))).toEqual([
+            "node_modules",
+          ]);
+          expect(yield* fileSystem.exists(path.join(worktree, "node_modules"))).toBe(true);
+        }),
+      ),
+    );
+
+    it.effect("skips everything outside a git checkout", () =>
       Effect.scoped(
         Effect.gen(function* () {
           const fileSystem = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
           const cwd = yield* makeTempDir;
-          yield* makeDir(cwd, "node_modules/react");
-          yield* writeFile(cwd, "Cargo.toml");
-          yield* makeDir(cwd, "target/release");
-          yield* writeFile(cwd, "src/main.rs");
+          yield* makeDir(cwd, "node_modules/pkg");
 
           const result = yield* removeWorktreeArtifacts(cwd);
 
-          expect(result.failed).toEqual([]);
-          expect(result.removed.map((absolute) => path.relative(cwd, absolute)).sort()).toEqual([
+          expect(result.removed).toEqual([]);
+          expect(result.skipped.map((absolute) => path.basename(absolute))).toEqual([
             "node_modules",
-            "target",
           ]);
-          expect(yield* fileSystem.exists(path.join(cwd, "node_modules"))).toBe(false);
-          expect(yield* fileSystem.exists(path.join(cwd, "target"))).toBe(false);
-          expect(yield* fileSystem.exists(path.join(cwd, "src/main.rs"))).toBe(true);
+          expect(yield* fileSystem.exists(path.join(cwd, "node_modules"))).toBe(true);
         }),
       ),
     );
   });
 
   describe("isLinkedWorktreePath", () => {
-    it.effect("recognizes a linked worktree via its gitdir's commondir file", () =>
+    it.effect("recognizes a real linked worktree", () =>
       Effect.scoped(
         Effect.gen(function* () {
-          const path = yield* Path.Path;
-          const repo = yield* makeTempDir;
-          yield* writeFile(repo, ".git/worktrees/branch/commondir", "../..\n");
-          const cwd = yield* makeTempDir;
-          yield* writeFile(cwd, ".git", `gitdir: ${path.join(repo, ".git/worktrees/branch")}\n`);
+          const { repo, worktree } = yield* makeRepoWithWorktree({ gitignore: "" });
 
-          expect(yield* isLinkedWorktreePath(cwd)).toBe(true);
+          expect(yield* isLinkedWorktreePath(worktree)).toBe(true);
+          expect(yield* isLinkedWorktreePath(repo)).toBe(false);
+        }),
+      ),
+    );
+
+    it.effect("rejects a directory borrowing another worktree's .git pointer", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const { worktree } = yield* makeRepoWithWorktree({ gitignore: "" });
+          const impostor = yield* makeTempDir;
+          const pointer = yield* fileSystem.readFileString(path.join(worktree, ".git"));
+          yield* fileSystem.writeFileString(path.join(impostor, ".git"), pointer);
+
+          expect(yield* isLinkedWorktreePath(impostor)).toBe(false);
         }),
       ),
     );
@@ -175,17 +263,6 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("worktreeArtifacts",
         Effect.gen(function* () {
           const cwd = yield* makeTempDir;
           yield* writeFile(cwd, ".git", "not a pointer\n");
-
-          expect(yield* isLinkedWorktreePath(cwd)).toBe(false);
-        }),
-      ),
-    );
-
-    it.effect("rejects a primary checkout with a .git directory", () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const cwd = yield* makeTempDir;
-          yield* makeDir(cwd, ".git");
 
           expect(yield* isLinkedWorktreePath(cwd)).toBe(false);
         }),

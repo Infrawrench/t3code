@@ -119,13 +119,14 @@ export const make = Effect.gen(function* () {
       return;
     }
 
-    const { removed, failed } = yield* removeWorktreeArtifacts(worktreePath);
-    if (removed.length > 0 || failed.length > 0) {
+    const { removed, failed, skipped } = yield* removeWorktreeArtifacts(worktreePath);
+    if (removed.length > 0 || failed.length > 0 || skipped.length > 0) {
       yield* Effect.logInfo("settle cleanup removed worktree build artifacts", {
         threadId,
         worktreePath,
         removed,
         failed,
+        skipped,
       });
     }
   });
