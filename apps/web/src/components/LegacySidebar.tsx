@@ -2313,10 +2313,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
             <span className="truncate text-sm font-medium text-sidebar-foreground/90">
               {project.displayName}
             </span>
-            <ProjectColorDot
-              color={resolveProjectGroupColor(project.memberProjects)}
-              className="size-1.5"
-            />
+            <ProjectColorDot color={resolveProjectGroupColor(project)} className="size-1.5" />
             {project.groupedProjectCount > 1 ? (
               <span className="shrink-0 text-secondary-label text-[10px]">
                 {project.groupedProjectCount} projects

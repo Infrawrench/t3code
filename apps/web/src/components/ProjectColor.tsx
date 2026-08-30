@@ -2,6 +2,7 @@ import { BanIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
 import {
   PROJECT_COLOR_OPTIONS,
+  PROJECT_COLOR_VALUES,
   projectColorCssValue,
   type ProjectColorName,
 } from "../projectColors";
@@ -67,7 +68,7 @@ export function ProjectColorPicker(props: {
             "size-5 shrink-0 cursor-pointer rounded-full outline-none transition-transform focus-visible:ring-2 focus-visible:ring-ring active:scale-90 disabled:cursor-not-allowed disabled:opacity-50",
             props.value === option.name && "ring-2 ring-ring ring-offset-1 ring-offset-background",
           )}
-          style={{ backgroundColor: `var(--color-${option.name}-500)` }}
+          style={{ backgroundColor: PROJECT_COLOR_VALUES[option.name] }}
         />
       ))}
     </div>

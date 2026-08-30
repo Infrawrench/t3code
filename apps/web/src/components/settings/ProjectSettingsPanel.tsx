@@ -328,7 +328,7 @@ function ProjectDetail({ group }: { group: SidebarProjectSnapshot }) {
       (member) => member.environmentId === group.environmentId && member.id === group.id,
     ) ?? group.memberProjects[0]!;
   const faviconPath = representative.faviconPath ?? null;
-  const groupColor = resolveProjectGroupColor(group.memberProjects);
+  const groupColor = resolveProjectGroupColor(group);
   const pickProjectFavicon =
     typeof window !== "undefined" &&
     group.memberProjects.every(

@@ -1959,7 +1959,7 @@ export default function Sidebar() {
     () =>
       new Map(
         projectGroups.flatMap((group) => {
-          const groupColor = resolveProjectGroupColor(group.memberProjects);
+          const groupColor = resolveProjectGroupColor(group);
           return group.memberProjects.map(
             (project) => [`${project.environmentId}:${project.id}`, groupColor] as const,
           );
@@ -3616,7 +3616,7 @@ export default function Sidebar() {
                     </span>
                     {scopedProjectGroup ? (
                       <ProjectColorDot
-                        color={resolveProjectGroupColor(scopedProjectGroup.memberProjects)}
+                        color={resolveProjectGroupColor(scopedProjectGroup)}
                         className="size-1.5"
                       />
                     ) : null}
@@ -3675,7 +3675,7 @@ export default function Sidebar() {
                             <span className="min-w-0 flex-1 truncate text-sm">{item.label}</span>
                             {project ? (
                               <ProjectColorDot
-                                color={resolveProjectGroupColor(project.memberProjects)}
+                                color={resolveProjectGroupColor(project)}
                                 className="size-1.5"
                               />
                             ) : null}
