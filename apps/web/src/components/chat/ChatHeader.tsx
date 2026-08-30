@@ -44,6 +44,7 @@ import {
   WorkspaceBreadcrumbItem,
   WorkspaceBreadcrumbSeparator,
 } from "../WorkspaceBreadcrumb";
+import { ProjectColorDot } from "../ProjectColor";
 import { cn } from "~/lib/utils";
 
 interface ChatHeaderProps {
@@ -56,6 +57,7 @@ interface ChatHeaderProps {
   /** PR feeding the settled classification, resolved by ChatView. */
   changeRequest: ChangeRequestSettleSource | null;
   activeProjectName: string | undefined;
+  activeProjectColor: string | null;
   activeProjectCwd: string | null;
   activeProjectFaviconPath: string | null;
   openInCwd: string | null;
@@ -125,6 +127,7 @@ export const ChatHeader = memo(function ChatHeader({
   isServerThread,
   changeRequest,
   activeProjectName,
+  activeProjectColor,
   activeProjectCwd,
   activeProjectFaviconPath,
   openInCwd,
@@ -313,6 +316,7 @@ export const ChatHeader = memo(function ChatHeader({
                     className="size-3.5"
                   />
                   <span className="max-w-40 truncate">{activeProjectName}</span>
+                  <ProjectColorDot color={activeProjectColor} className="size-1.5" />
                 </TooltipTrigger>
                 <TooltipPopup side="top">New thread in {activeProjectName}</TooltipPopup>
               </Tooltip>

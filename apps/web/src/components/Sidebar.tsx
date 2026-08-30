@@ -169,6 +169,8 @@ import {
   type SnoozePreset,
 } from "./Sidebar.snooze";
 import { ProjectFavicon } from "./ProjectFavicon";
+import { ProjectColorDot } from "./ProjectColor";
+import { resolveProjectGroupColor } from "../projectColors";
 import { ProviderInstanceIcon } from "./chat/ProviderInstanceIcon";
 import { getTriggerDisplayModelLabel } from "./chat/providerIconUtils";
 import {
@@ -273,6 +275,7 @@ function SidebarThreadTooltip({
   projectTitle,
   projectCwd,
   projectFaviconPath,
+  projectColor,
   environmentLabel,
   providerEntry,
   showInstanceBadge,
@@ -286,6 +289,7 @@ function SidebarThreadTooltip({
   projectTitle: string | null;
   projectCwd: string | null;
   projectFaviconPath: string | null;
+  projectColor: string | null;
   environmentLabel: string | null;
   providerEntry: ProviderInstanceEntry | null;
   showInstanceBadge: boolean;
@@ -321,6 +325,7 @@ function SidebarThreadTooltip({
                 className="size-3 shrink-0 stroke-muted-foreground"
               />
               <div className="min-w-0 truncate text-foreground/75">{projectTitle}</div>
+              <ProjectColorDot color={projectColor} className="size-1.5" />
             </div>
           ) : null}
           {environmentLabel ? (
@@ -485,6 +490,7 @@ const SidebarDraftRow = memo(function SidebarDraftRow(props: {
   projectTitle: string | null;
   projectCwd: string | null;
   projectFaviconPath: string | null;
+  projectColor: string | null;
   isActive: boolean;
   onNavigate: (draftId: DraftId) => void;
   onDiscard: (draftId: DraftId) => void;
@@ -553,6 +559,7 @@ const SidebarDraftRow = memo(function SidebarDraftRow(props: {
               faviconPath={props.projectFaviconPath}
               className="size-4 shrink-0"
             />
+            <ProjectColorDot color={props.projectColor} className="size-1.5" />
             <span className="min-w-0 flex-1 truncate text-xs font-medium text-secondary-label">
               {props.projectTitle}
             </span>
@@ -595,6 +602,7 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
   projectDisplayNameByKey: ReadonlyMap<string, string>;
   projectCwdByKey: ReadonlyMap<string, string>;
   projectFaviconPathByKey: ReadonlyMap<string, string | null | undefined>;
+  projectColorByKey: ReadonlyMap<string, string | null>;
   scopedProjectKeys: ReadonlySet<string> | null;
   routeDraftId: string | null;
   onNavigateToDraft: (draftId: DraftId) => void;
@@ -691,6 +699,7 @@ const SidebarDraftBlock = memo(function SidebarDraftBlock(props: {
             projectTitle={props.projectDisplayNameByKey.get(projectKey) ?? null}
             projectCwd={props.projectCwdByKey.get(projectKey) ?? null}
             projectFaviconPath={props.projectFaviconPathByKey.get(projectKey) ?? null}
+            projectColor={props.projectColorByKey.get(projectKey) ?? null}
             isActive={draftId === props.routeDraftId}
             onNavigate={props.onNavigateToDraft}
             onDiscard={handleDiscard}
@@ -739,6 +748,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
   projectCwd: string | null;
   projectFaviconPath: string | null;
   projectTitle: string | null;
+  projectColor: string | null;
   providerEntryByInstanceId: ReadonlyMap<string, ProviderInstanceEntry>;
   timestampFormat: TimestampFormat;
   onThreadClick: (event: ReactMouseEvent, threadRef: ScopedThreadRef) => void;
@@ -971,6 +981,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
       projectTitle={props.projectTitle}
       projectCwd={props.projectCwd}
       projectFaviconPath={props.projectFaviconPath}
+      projectColor={props.projectColor}
       environmentLabel={props.environmentLabel}
       providerEntry={providerEntry}
       showInstanceBadge={showInstanceBadge}
@@ -1281,6 +1292,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                 fallbackIcon={MessageSquareIcon}
               />
             </span>
+            <ProjectColorDot color={props.projectColor} className="-ml-1 size-1.5" />
             {title}
             {pinIndicator}
             {terminalStatusIcon}
@@ -1433,6 +1445,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
                 faviconPath={props.projectFaviconPath}
                 className="size-4 shrink-0"
               />
+              <ProjectColorDot color={props.projectColor} className="size-1.5" />
               {props.projectTitle ? (
                 <span
                   className={cn(
@@ -1632,6 +1645,7 @@ const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
   projectCwd: string | null;
   projectFaviconPath: string | null;
   projectTitle: string | null;
+  projectColor: string | null;
   environmentLabel: string | null;
   providerEntryByInstanceId: ReadonlyMap<string, ProviderInstanceEntry>;
   isHighlighted: boolean;
@@ -1709,6 +1723,7 @@ const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
             className="size-4 shrink-0"
             fallbackIcon={MessageSquareIcon}
           />
+          <ProjectColorDot color={props.projectColor} className="-ml-1 size-1.5" />
           <span className="min-w-0 flex-1 truncate">{thread.title}</span>
           <span className="shrink-0 text-xs text-muted-foreground/55 tabular-nums">
             {threadTimeLabel(thread)}
@@ -1719,6 +1734,7 @@ const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props: {
           projectTitle={props.projectTitle}
           projectCwd={props.projectCwd}
           projectFaviconPath={props.projectFaviconPath}
+          projectColor={props.projectColor}
           environmentLabel={props.environmentLabel}
           providerEntry={providerEntry}
           showInstanceBadge={showInstanceBadge}
@@ -1934,6 +1950,20 @@ export default function Sidebar() {
             (project) => [`${project.environmentId}:${project.id}`, group.displayName] as const,
           ),
         ),
+      ),
+    [projectGroups],
+  );
+  // Group-level color: a color chosen for any member identifies every thread
+  // in the group, so grouped repos stay one visual unit.
+  const projectColorByKey = useMemo(
+    () =>
+      new Map(
+        projectGroups.flatMap((group) => {
+          const groupColor = resolveProjectGroupColor(group.memberProjects);
+          return group.memberProjects.map(
+            (project) => [`${project.environmentId}:${project.id}`, groupColor] as const,
+          );
+        }),
       ),
     [projectGroups],
   );
@@ -3584,6 +3614,12 @@ export default function Sidebar() {
                     <span className="min-w-0 flex-1 truncate">
                       {scopedProjectGroup?.displayName ?? "All projects"}
                     </span>
+                    {scopedProjectGroup ? (
+                      <ProjectColorDot
+                        color={resolveProjectGroupColor(scopedProjectGroup.memberProjects)}
+                        className="size-1.5"
+                      />
+                    ) : null}
                     <ChevronDownIcon className="-mr-px size-4 shrink-0" />
                   </ComboboxTrigger>
                   <ComboboxPopup
@@ -3637,6 +3673,12 @@ export default function Sidebar() {
                               <FolderIcon className="size-4 shrink-0" />
                             )}
                             <span className="min-w-0 flex-1 truncate text-sm">{item.label}</span>
+                            {project ? (
+                              <ProjectColorDot
+                                color={resolveProjectGroupColor(project.memberProjects)}
+                                className="size-1.5"
+                              />
+                            ) : null}
                             {project ? (
                               <Button
                                 size="icon-xs"
@@ -3718,6 +3760,10 @@ export default function Sidebar() {
                           projectDisplayNameByKey.get(
                             `${thread.environmentId}:${thread.projectId}`,
                           ) ?? null
+                        }
+                        projectColor={
+                          projectColorByKey.get(`${thread.environmentId}:${thread.projectId}`) ??
+                          null
                         }
                         environmentLabel={environmentLabelById.get(thread.environmentId) ?? null}
                         providerEntryByInstanceId={
@@ -3834,6 +3880,10 @@ export default function Sidebar() {
                             `${thread.environmentId}:${thread.projectId}`,
                           ) ?? null
                         }
+                        projectColor={
+                          projectColorByKey.get(`${thread.environmentId}:${thread.projectId}`) ??
+                          null
+                        }
                         providerEntryByInstanceId={
                           providerEntriesByEnvironment.get(thread.environmentId) ??
                           EMPTY_PROVIDER_ENTRIES
@@ -3872,6 +3922,7 @@ export default function Sidebar() {
                       projectDisplayNameByKey={projectDisplayNameByKey}
                       projectCwdByKey={projectCwdByKey}
                       projectFaviconPathByKey={projectFaviconPathByKey}
+                      projectColorByKey={projectColorByKey}
                       scopedProjectKeys={scopedProjectKeys}
                       routeDraftId={routeDraftIdForRows}
                       onNavigateToDraft={navigateToDraft}

@@ -74,6 +74,8 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { TraitsPicker } from "../chat/TraitsPicker";
 import { ProjectFavicon } from "../ProjectFavicon";
+import { ProjectColorPicker } from "../ProjectColor";
+import { resolveProjectGroupColor, type ProjectColorName } from "../../projectColors";
 import {
   EMPTY_PROJECT_SCRIPT_INPUT,
   editorRequestForScript,
@@ -326,6 +328,7 @@ function ProjectDetail({ group }: { group: SidebarProjectSnapshot }) {
       (member) => member.environmentId === group.environmentId && member.id === group.id,
     ) ?? group.memberProjects[0]!;
   const faviconPath = representative.faviconPath ?? null;
+  const groupColor = resolveProjectGroupColor(group.memberProjects);
   const pickProjectFavicon =
     typeof window !== "undefined" &&
     group.memberProjects.every(
@@ -365,6 +368,7 @@ function ProjectDetail({ group }: { group: SidebarProjectSnapshot }) {
         defaultModelSelection: ModelSelection | null;
         defaultThreadEnvMode: ThreadEnvMode | null;
         faviconPath: string | null;
+        color: string | null;
       }>,
       failureTitle: string,
     ): Promise<AtomCommandResult<void, unknown>> => {
@@ -466,6 +470,16 @@ function ProjectDetail({ group }: { group: SidebarProjectSnapshot }) {
       }
     },
     [updateAllMembers],
+  );
+
+  const setProjectColor = useCallback(
+    async (color: ProjectColorName | null) => {
+      if (groupColor === color) return;
+      // Fans out to every member so the whole group shares one color, on
+      // this device and everywhere else the projects are connected.
+      await updateAllMembers({ color }, "Failed to update project color");
+    },
+    [groupColor, updateAllMembers],
   );
 
   // ----- checkout selection and scripts -----
@@ -825,6 +839,18 @@ function ProjectDetail({ group }: { group: SidebarProjectSnapshot }) {
                   Choose file
                 </Button>
               </div>
+            }
+          />
+          <SettingsRow
+            title="Color"
+            description="Marks this project with a colored dot in the sidebar and chat header, so repos are easier to tell apart."
+            control={
+              <ProjectColorPicker
+                value={groupColor}
+                onChange={(color) => {
+                  void setProjectColor(color);
+                }}
+              />
             }
           />
         </SettingsSection>
