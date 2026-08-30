@@ -1,25 +1,55 @@
+/**
+ * ThreadSettleCleanupReactor - Settled-thread worktree cleanup reactor.
+ *
+ * Owns background workers that react to thread settlement domain events and
+ * perform best-effort disk cleanup of regenerable build artifacts in the
+ * settled thread's worktree.
+ *
+ * @module ThreadSettleCleanupReactor
+ */
 import type { OrchestrationEvent } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
-import { isLinkedWorktreePath, removeWorktreeArtifacts } from "../../git/worktreeArtifacts.ts";
+import { isLinkedWorktreePath, removeWorktreeArtifacts } from "../git/worktreeArtifacts.ts";
 import {
   ProjectionThreadRepository,
   type ProjectionThread,
-} from "../../persistence/Services/ProjectionThreads.ts";
-import { forkParked } from "../../serverActivation.ts";
-import * as ServerSettings from "../../serverSettings.ts";
-import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
-import {
-  ThreadSettleCleanupReactor,
-  type ThreadSettleCleanupReactorShape,
-} from "../Services/ThreadSettleCleanupReactor.ts";
+} from "../persistence/Services/ProjectionThreads.ts";
+import { forkParked } from "../serverActivation.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import { OrchestrationEngineService } from "./Services/OrchestrationEngine.ts";
 
 type ThreadSettledEvent = Extract<OrchestrationEvent, { type: "thread.settled" }>;
+
+/**
+ * ThreadSettleCleanupReactor - Service tag for settle-time worktree cleanup
+ * workers.
+ */
+export class ThreadSettleCleanupReactor extends Context.Service<
+  ThreadSettleCleanupReactor,
+  {
+    /**
+     * Start reacting to thread.settled orchestration domain events.
+     *
+     * The returned effect must be run in a scope so all worker fibers can be
+     * finalized on shutdown.
+     */
+    readonly start: () => Effect.Effect<void, never, Scope.Scope>;
+
+    /**
+     * Resolves when the internal processing queue is empty and idle.
+     * Intended for test use to replace timing-sensitive sleeps.
+     */
+    readonly drain: Effect.Effect<void>;
+  }
+>()("t3/orchestration/ThreadSettleCleanupReactor") {}
 
 const normalizeWorktreePath = (path: string | null): string | null => {
   const trimmed = path?.trim();
@@ -46,7 +76,7 @@ export const isWorktreeSharedWithAnotherThread = (
   );
 };
 
-const make = Effect.gen(function* () {
+export const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const projectionThreads = yield* ProjectionThreadRepository;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
@@ -63,6 +93,14 @@ const make = Effect.gen(function* () {
     const thread = Option.getOrNull(yield* projectionThreads.getById({ threadId }));
     const worktreePath = normalizeWorktreePath(thread?.worktreePath ?? null);
     if (!thread || thread.deletedAt !== null || !worktreePath) {
+      return;
+    }
+
+    // Events are projected before they are published, so the projection row
+    // is current by the time this worker dequeues. A thread unsettled after
+    // this event was queued no longer reads "settled" here, which keeps a
+    // stale settle from cleaning under a resuming turn.
+    if (thread.settledOverride !== "settled") {
       return;
     }
 
@@ -106,7 +144,7 @@ const make = Effect.gen(function* () {
 
   const worker = yield* makeDrainableWorker(processThreadSettledSafely);
 
-  const start: ThreadSettleCleanupReactorShape["start"] = Effect.fn("start")(function* () {
+  const start: ThreadSettleCleanupReactor["Service"]["start"] = Effect.fn("start")(function* () {
     yield* forkParked(
       Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
         if (event.type !== "thread.settled") {
@@ -120,7 +158,7 @@ const make = Effect.gen(function* () {
   return {
     start,
     drain: worker.drain,
-  } satisfies ThreadSettleCleanupReactorShape;
+  } satisfies ThreadSettleCleanupReactor["Service"];
 });
 
-export const ThreadSettleCleanupReactorLive = Layer.effect(ThreadSettleCleanupReactor, make);
+export const layer = Layer.effect(ThreadSettleCleanupReactor, make);

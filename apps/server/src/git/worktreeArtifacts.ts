@@ -72,7 +72,13 @@ export const findWorktreeArtifactDirectories = Effect.fn("findWorktreeArtifactDi
       const entries = yield* fileSystem
         .readDirectory(directory)
         .pipe(Effect.orElseSucceed(() => [] as Array<string>));
-      const hasCargoManifest = entries.includes(CARGO_MANIFEST_FILE);
+      // The manifest must be a regular file: a directory named Cargo.toml
+      // does not make a sibling `target` directory a build artifact.
+      const hasCargoManifest =
+        entries.includes(CARGO_MANIFEST_FILE) &&
+        (yield* fileSystem
+          .stat(path.join(directory, CARGO_MANIFEST_FILE))
+          .pipe(Effect.orElseSucceed(() => null)))?.type === "File";
 
       for (const entry of entries) {
         if (entry === ".git") {

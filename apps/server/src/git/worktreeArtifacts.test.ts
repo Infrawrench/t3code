@@ -70,6 +70,18 @@ it.layer(NodeServices.layer, { excludeTestServices: true })("worktreeArtifacts",
       ),
     );
 
+    it.effect("ignores target when the Cargo.toml sibling is a directory", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const cwd = yield* makeTempDir;
+          yield* makeDir(cwd, "pkg/Cargo.toml");
+          yield* makeDir(cwd, "pkg/target");
+
+          expect(yield* relativeArtifacts(cwd)).toEqual([]);
+        }),
+      ),
+    );
+
     it.effect("does not descend into matched artifacts or .git", () =>
       Effect.scoped(
         Effect.gen(function* () {

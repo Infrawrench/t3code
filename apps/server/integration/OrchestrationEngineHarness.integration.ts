@@ -64,7 +64,7 @@ import {
   type OrchestrationEngineShape,
 } from "../src/orchestration/Services/OrchestrationEngine.ts";
 import { ThreadDeletionReactor } from "../src/orchestration/Services/ThreadDeletionReactor.ts";
-import { ThreadSettleCleanupReactor } from "../src/orchestration/Services/ThreadSettleCleanupReactor.ts";
+import { ThreadSettleCleanupReactor } from "../src/orchestration/ThreadSettleCleanupReactor.ts";
 import { OrchestrationReactor } from "../src/orchestration/Services/OrchestrationReactor.ts";
 import { ProjectionSnapshotQuery } from "../src/orchestration/Services/ProjectionSnapshotQuery.ts";
 import {
