@@ -1,0 +1,140 @@
+/**
+ * worktreeArtifacts - Regenerable build-artifact discovery and removal for
+ * worktree directories.
+ *
+ * Used by the settle-time worktree cleanup to reclaim disk from parked
+ * threads without touching tracked files: everything removed here is
+ * recreated by the project's package manager or build tool on the next run.
+ *
+ * @module worktreeArtifacts
+ */
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+
+// Directory names that are always safe to delete wherever they appear.
+const ARTIFACT_DIRECTORY_NAMES: ReadonlySet<string> = new Set([
+  "node_modules",
+  ".next",
+  ".nuxt",
+  ".turbo",
+  ".svelte-kit",
+]);
+
+// `target` is only a build artifact when it belongs to a Cargo project, so
+// it is matched exclusively next to a sibling `Cargo.toml`.
+const CARGO_ARTIFACT_DIRECTORY = "target";
+const CARGO_MANIFEST_FILE = "Cargo.toml";
+
+// Artifact roots live near the top of real repos; a depth cap keeps a
+// pathological tree from turning the scan into a full-disk walk.
+const MAX_SCAN_DEPTH = 8;
+
+/**
+ * Whether `worktreePath` points at a linked git worktree.
+ *
+ * Linked worktrees keep a `.git` pointer file where a primary checkout has a
+ * `.git` directory, which makes this a cheap guard against ever cleaning a
+ * project's main checkout.
+ */
+export const isLinkedWorktreePath = Effect.fn("isLinkedWorktreePath")(function* (
+  worktreePath: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const info = yield* fileSystem
+    .stat(path.join(worktreePath, ".git"))
+    .pipe(Effect.orElseSucceed(() => null));
+  return info !== null && info.type === "File";
+});
+
+/**
+ * Find regenerable build-artifact directories inside a worktree.
+ *
+ * Matches `node_modules`, framework caches, and Cargo `target` directories
+ * (only next to a `Cargo.toml`). Matched directories are returned without
+ * being descended into, `.git` is never entered, and symlinked directories
+ * are never followed so the scan cannot escape the worktree.
+ */
+export const findWorktreeArtifactDirectories = Effect.fn("findWorktreeArtifactDirectories")(
+  function* (worktreePath: string) {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fileSystem.realPath(worktreePath);
+
+    const found: Array<string> = [];
+    const pending: Array<{ readonly directory: string; readonly depth: number }> = [
+      { directory: root, depth: 0 },
+    ];
+
+    while (pending.length > 0) {
+      const { directory, depth } = pending.pop()!;
+      const entries = yield* fileSystem
+        .readDirectory(directory)
+        .pipe(Effect.orElseSucceed(() => [] as Array<string>));
+      const hasCargoManifest = entries.includes(CARGO_MANIFEST_FILE);
+
+      for (const entry of entries) {
+        if (entry === ".git") {
+          continue;
+        }
+        const absolute = path.join(directory, entry);
+        const info = yield* fileSystem.stat(absolute).pipe(Effect.orElseSucceed(() => null));
+        if (info === null || info.type !== "Directory") {
+          continue;
+        }
+        if (
+          ARTIFACT_DIRECTORY_NAMES.has(entry) ||
+          (entry === CARGO_ARTIFACT_DIRECTORY && hasCargoManifest)
+        ) {
+          found.push(absolute);
+          continue;
+        }
+        if (depth + 1 >= MAX_SCAN_DEPTH) {
+          continue;
+        }
+        // `stat` follows symlinks, so a symlinked directory reports as a
+        // plain directory; comparing against its canonical path is what
+        // keeps the walk inside the worktree.
+        const canonical = yield* fileSystem
+          .realPath(absolute)
+          .pipe(Effect.orElseSucceed(() => null));
+        if (canonical !== absolute) {
+          continue;
+        }
+        pending.push({ directory: absolute, depth: depth + 1 });
+      }
+    }
+
+    return found;
+  },
+);
+
+/**
+ * Remove all regenerable build-artifact directories from a worktree.
+ *
+ * Removal is best-effort per directory: one undeletable artifact does not
+ * abort the rest of the sweep.
+ */
+export const removeWorktreeArtifacts = Effect.fn("removeWorktreeArtifacts")(function* (
+  worktreePath: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const artifacts = yield* findWorktreeArtifactDirectories(worktreePath);
+
+  const removed: Array<string> = [];
+  const failed: Array<string> = [];
+  for (const artifact of artifacts) {
+    const succeeded = yield* fileSystem.remove(artifact, { recursive: true, force: true }).pipe(
+      Effect.as(true),
+      Effect.orElseSucceed(() => false),
+    );
+    if (succeeded) {
+      removed.push(artifact);
+    } else {
+      failed.push(artifact);
+    }
+  }
+
+  return { removed, failed };
+});

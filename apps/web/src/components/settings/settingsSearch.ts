@@ -153,6 +153,11 @@ export const SETTINGS_SEARCH_ITEMS = [
     targetId: "new-threads",
   },
   {
+    id: "clean-settled-worktrees",
+    title: "Clean settled worktrees",
+    to: "/settings/general",
+  },
+  {
     id: "add-project-starts-in",
     title: "Add project starts in",
     to: "/settings/general",
