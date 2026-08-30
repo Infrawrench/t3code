@@ -69,7 +69,11 @@ import {
 import { useEnvironments, usePrimaryEnvironmentId } from "../../state/environments";
 import { useProjects, useThreadShells } from "../../state/entities";
 import { projectEnvironment } from "../../state/projects";
-import { primaryServerProvidersAtom, serverEnvironment } from "../../state/server";
+import {
+  environmentServerConfigsAtom,
+  primaryServerProvidersAtom,
+  serverEnvironment,
+} from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { TraitsPicker } from "../chat/TraitsPicker";
@@ -371,8 +375,9 @@ function ProjectDetail({ group }: { group: SidebarProjectSnapshot }) {
         color: string | null;
       }>,
       failureTitle: string,
+      members: ReadonlyArray<SidebarProjectGroupMember> = group.memberProjects,
     ): Promise<AtomCommandResult<void, unknown>> => {
-      for (const member of group.memberProjects) {
+      for (const member of members) {
         const result = mapAtomCommandResult(
           await updateProject({
             environmentId: member.environmentId,
@@ -384,7 +389,7 @@ function ProjectDetail({ group }: { group: SidebarProjectSnapshot }) {
           // A partial fan-out is possible: earlier members already took the
           // write. Name the environment so the user knows where it stopped.
           reportFailure(
-            group.memberProjects.length > 1
+            members.length > 1
               ? `${failureTitle} on ${member.environmentLabel ?? "the current environment"}`
               : failureTitle,
             result,
@@ -472,14 +477,40 @@ function ProjectDetail({ group }: { group: SidebarProjectSnapshot }) {
     [updateAllMembers],
   );
 
+  // ----- color -----
+  // Only members whose server advertises the projectColor capability get the
+  // command; pre-color servers would silently drop the unknown field. The
+  // row hides entirely when no member supports it.
+  const serverConfigs = useAtomValue(environmentServerConfigsAtom);
+  const colorCapableMembers = useMemo(
+    () =>
+      group.memberProjects.filter(
+        (member) =>
+          serverConfigs.get(member.environmentId)?.environment.capabilities.projectColor === true,
+      ),
+    [group.memberProjects, serverConfigs],
+  );
+  const [isSavingColor, setIsSavingColor] = useState(false);
+  const savingColorRef = useRef(false);
   const setProjectColor = useCallback(
     async (color: ProjectColorName | null) => {
       if (groupColor === color) return;
-      // Fans out to every member so the whole group shares one color, on
-      // this device and everywhere else the projects are connected.
-      await updateAllMembers({ color }, "Failed to update project color");
+      // One fan-out at a time: overlapping member-by-member writes could
+      // interleave and leave the group with mixed colors.
+      if (savingColorRef.current) return;
+      savingColorRef.current = true;
+      setIsSavingColor(true);
+      try {
+        // Fans out to every capable member so the whole group shares one
+        // color, on this device and everywhere else the projects are
+        // connected.
+        await updateAllMembers({ color }, "Failed to update project color", colorCapableMembers);
+      } finally {
+        savingColorRef.current = false;
+        setIsSavingColor(false);
+      }
     },
-    [groupColor, updateAllMembers],
+    [colorCapableMembers, groupColor, updateAllMembers],
   );
 
   // ----- checkout selection and scripts -----
@@ -841,18 +872,21 @@ function ProjectDetail({ group }: { group: SidebarProjectSnapshot }) {
               </div>
             }
           />
-          <SettingsRow
-            title="Color"
-            description="Marks this project with a colored dot in the sidebar and chat header, so repos are easier to tell apart."
-            control={
-              <ProjectColorPicker
-                value={groupColor}
-                onChange={(color) => {
-                  void setProjectColor(color);
-                }}
-              />
-            }
-          />
+          {colorCapableMembers.length > 0 ? (
+            <SettingsRow
+              title="Color"
+              description="Marks this project with a colored dot in the sidebar and chat header, so repos are easier to tell apart."
+              control={
+                <ProjectColorPicker
+                  value={groupColor}
+                  disabled={isSavingColor}
+                  onChange={(color) => {
+                    void setProjectColor(color);
+                  }}
+                />
+              }
+            />
+          ) : null}
         </SettingsSection>
 
         <SettingsSection title="New threads">
