@@ -147,25 +147,19 @@ export const make = Effect.gen(function* () {
 
   const worker = yield* makeDrainableWorker(processThreadSettledSafely);
 
-  // Highest event sequence the subscriber has handed to the worker; the
-  // watermark lets drainThrough wait for events that are committed but still
-  // in flight to this subscriber.
+  // Highest event sequence this subscriber has handed to the worker. The
+  // watermark only advances for events the subscription actually delivered,
+  // so drainThrough never reports coverage of an event this reactor missed.
   const seenSequence = yield* SubscriptionRef.make(0);
   const noteSeen = (sequence: number) =>
     SubscriptionRef.update(seenSequence, (seen) => Math.max(seen, sequence));
 
   const start: ThreadSettleCleanupReactor["Service"]["start"] = Effect.fn("start")(function* () {
     yield* forkParked(
-      Stream.runForEach(
-        orchestrationEngine.streamDomainEvents.pipe(
-          // Events that landed before the subscription are not replayed, so
-          // start the watermark at the current head instead of zero.
-          Stream.onStart(orchestrationEngine.latestSequence.pipe(Effect.flatMap(noteSeen))),
+      Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) =>
+        (event.type === "thread.settled" ? worker.enqueue(event) : Effect.void).pipe(
+          Effect.andThen(noteSeen(event.sequence)),
         ),
-        (event) =>
-          (event.type === "thread.settled" ? worker.enqueue(event) : Effect.void).pipe(
-            Effect.andThen(noteSeen(event.sequence)),
-          ),
       ),
     );
   });

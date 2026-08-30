@@ -163,7 +163,6 @@ describe("ThreadSettleCleanupReactor cleanup gates", () => {
         const rows = [row, ...(input.siblingRows?.(worktree) ?? [])];
 
         const engine = {
-          latestSequence: Effect.succeed(0),
           streamDomainEvents: Stream.make(settledEvent),
         } as unknown as OrchestrationEngineShape;
         const repository = {
