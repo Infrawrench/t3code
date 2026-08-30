@@ -1,7 +1,36 @@
-import { ThreadId } from "@t3tools/contracts";
+import {
+  CommandId,
+  CorrelationId,
+  EventId,
+  type OrchestrationEvent,
+  ProjectId,
+  ThreadId,
+} from "@t3tools/contracts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { it as effectIt } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
+import * as Stream from "effect/Stream";
 import { describe, expect, it } from "vite-plus/test";
 
-import { isWorktreeSharedWithAnotherThread } from "./ThreadSettleCleanupReactor.ts";
+import {
+  ProjectionThreadRepository,
+  type ProjectionThread,
+  type ProjectionThreadRepositoryShape,
+} from "../persistence/Services/ProjectionThreads.ts";
+import { layerTest as serverSettingsLayerTest } from "../serverSettings.ts";
+import {
+  OrchestrationEngineService,
+  type OrchestrationEngineShape,
+} from "./Services/OrchestrationEngine.ts";
+import {
+  isWorktreeSharedWithAnotherThread,
+  layer as reactorLayer,
+  ThreadSettleCleanupReactor,
+} from "./ThreadSettleCleanupReactor.ts";
 
 describe("isWorktreeSharedWithAnotherThread", () => {
   const target = {
@@ -43,4 +72,158 @@ describe("isWorktreeSharedWithAnotherThread", () => {
       isWorktreeSharedWithAnotherThread([], { threadId: target.threadId, worktreePath: null }),
     ).toBe(false);
   });
+});
+
+describe("ThreadSettleCleanupReactor cleanup gates", () => {
+  const now = "2026-01-01T00:00:00.000Z";
+  const threadId = ThreadId.make("thread-settle-cleanup-reactor");
+  const projectId = ProjectId.make("project-settle-cleanup-reactor");
+
+  const settledEvent: OrchestrationEvent = {
+    sequence: 1,
+    eventId: EventId.make("evt-settled-1"),
+    aggregateKind: "thread",
+    aggregateId: threadId,
+    type: "thread.settled",
+    occurredAt: now,
+    commandId: CommandId.make("cmd-settled-1"),
+    causationEventId: null,
+    correlationId: CorrelationId.make("cmd-settled-1"),
+    metadata: {},
+    payload: { threadId, settledAt: now, updatedAt: now },
+  };
+
+  const threadRow = (overrides: Partial<ProjectionThread>): ProjectionThread =>
+    ({
+      threadId,
+      projectId,
+      worktreePath: null,
+      deletedAt: null,
+      settledOverride: "settled",
+      ...overrides,
+    }) as unknown as ProjectionThread;
+
+  // A faithful linked-worktree layout: a .git pointer file whose gitdir
+  // target carries the commondir file, plus a node_modules artifact.
+  const makeWorktreeFixture = (kind: "linked" | "primary") =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const repo = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3code-settle-reactor-repo-",
+      });
+      const worktree = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3code-settle-reactor-wt-",
+      });
+      if (kind === "linked") {
+        const gitDir = path.join(repo, ".git/worktrees/branch");
+        yield* fileSystem.makeDirectory(gitDir, { recursive: true });
+        yield* fileSystem.writeFileString(path.join(gitDir, "commondir"), "../..\n");
+        yield* fileSystem.writeFileString(path.join(worktree, ".git"), `gitdir: ${gitDir}\n`);
+      } else {
+        yield* fileSystem.makeDirectory(path.join(worktree, ".git"), { recursive: true });
+      }
+      yield* fileSystem.makeDirectory(path.join(worktree, "node_modules/pkg"), {
+        recursive: true,
+      });
+      return worktree;
+    });
+
+  const runSettleCleanup = (input: {
+    readonly enabled: boolean;
+    readonly fixtureKind: "linked" | "primary";
+    readonly rowOverrides?: Partial<ProjectionThread>;
+    readonly siblingRows?: (worktree: string) => ReadonlyArray<ProjectionThread>;
+  }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const worktree = yield* makeWorktreeFixture(input.fixtureKind);
+        const row = threadRow({ worktreePath: worktree, ...input.rowOverrides });
+        const rows = [row, ...(input.siblingRows?.(worktree) ?? [])];
+
+        const engine = {
+          latestSequence: Effect.succeed(0),
+          streamDomainEvents: Stream.make(settledEvent),
+        } as unknown as OrchestrationEngineShape;
+        const repository = {
+          getById: () => Effect.succeed(Option.some(row)),
+          listByProjectId: () => Effect.succeed(rows),
+        } as unknown as ProjectionThreadRepositoryShape;
+        const layer = reactorLayer.pipe(
+          Layer.provide(Layer.succeed(OrchestrationEngineService, engine)),
+          Layer.provide(Layer.succeed(ProjectionThreadRepository, repository)),
+          Layer.provide(serverSettingsLayerTest({ cleanWorktreeArtifactsOnSettle: input.enabled })),
+          Layer.provide(NodeServices.layer),
+        );
+
+        yield* Effect.gen(function* () {
+          const reactor = yield* ThreadSettleCleanupReactor;
+          yield* reactor.start();
+          yield* reactor.drainThrough(settledEvent.sequence);
+        }).pipe(Effect.provide(layer), Effect.scoped);
+
+        return yield* fileSystem.exists(path.join(worktree, "node_modules"));
+      }),
+    ).pipe(Effect.provide(NodeServices.layer));
+
+  effectIt.effect("cleans artifacts when enabled and every guard passes", () =>
+    Effect.gen(function* () {
+      expect(yield* runSettleCleanup({ enabled: true, fixtureKind: "linked" })).toBe(false);
+    }),
+  );
+
+  effectIt.effect("skips when the setting is disabled", () =>
+    Effect.gen(function* () {
+      expect(yield* runSettleCleanup({ enabled: false, fixtureKind: "linked" })).toBe(true);
+    }),
+  );
+
+  effectIt.effect("skips when the thread no longer reads settled", () =>
+    Effect.gen(function* () {
+      expect(
+        yield* runSettleCleanup({
+          enabled: true,
+          fixtureKind: "linked",
+          rowOverrides: { settledOverride: null },
+        }),
+      ).toBe(true);
+    }),
+  );
+
+  effectIt.effect("skips a deleted thread", () =>
+    Effect.gen(function* () {
+      expect(
+        yield* runSettleCleanup({
+          enabled: true,
+          fixtureKind: "linked",
+          rowOverrides: { deletedAt: now },
+        }),
+      ).toBe(true);
+    }),
+  );
+
+  effectIt.effect("skips when another live thread shares the worktree", () =>
+    Effect.gen(function* () {
+      expect(
+        yield* runSettleCleanup({
+          enabled: true,
+          fixtureKind: "linked",
+          siblingRows: (worktree) => [
+            threadRow({
+              threadId: ThreadId.make("thread-settle-cleanup-sibling"),
+              worktreePath: worktree,
+            }),
+          ],
+        }),
+      ).toBe(true);
+    }),
+  );
+
+  effectIt.effect("skips a primary checkout", () =>
+    Effect.gen(function* () {
+      expect(yield* runSettleCleanup({ enabled: true, fixtureKind: "primary" })).toBe(true);
+    }),
+  );
 });

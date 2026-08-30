@@ -71,7 +71,7 @@ describe("OrchestrationReactor", () => {
               started.push("thread-settle-cleanup-reactor");
               return Effect.void;
             },
-            drain: Effect.void,
+            drainThrough: () => Effect.void,
           }),
         ),
         Layer.provideMerge(

@@ -16,6 +16,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 
 import { isLinkedWorktreePath, removeWorktreeArtifacts } from "../git/worktreeArtifacts.ts";
 import {
@@ -44,10 +45,11 @@ export class ThreadSettleCleanupReactor extends Context.Service<
     readonly start: () => Effect.Effect<void, never, Scope.Scope>;
 
     /**
-     * Resolves when the internal processing queue is empty and idle.
-     * Intended for test use to replace timing-sensitive sleeps.
+     * Resolves once every thread.settled at or before the supplied event
+     * sequence has been handed to the worker and the worker is empty and
+     * idle. Intended for test use to replace timing-sensitive sleeps.
      */
-    readonly drain: Effect.Effect<void>;
+    readonly drainThrough: (sequence: number) => Effect.Effect<void>;
   }
 >()("t3/orchestration/ThreadSettleCleanupReactor") {}
 
@@ -144,20 +146,42 @@ export const make = Effect.gen(function* () {
 
   const worker = yield* makeDrainableWorker(processThreadSettledSafely);
 
+  // Highest event sequence the subscriber has handed to the worker; the
+  // watermark lets drainThrough wait for events that are committed but still
+  // in flight to this subscriber.
+  const seenSequence = yield* SubscriptionRef.make(0);
+  const noteSeen = (sequence: number) =>
+    SubscriptionRef.update(seenSequence, (seen) => Math.max(seen, sequence));
+
   const start: ThreadSettleCleanupReactor["Service"]["start"] = Effect.fn("start")(function* () {
     yield* forkParked(
-      Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
-        if (event.type !== "thread.settled") {
-          return Effect.void;
-        }
-        return worker.enqueue(event);
-      }),
+      Stream.runForEach(
+        orchestrationEngine.streamDomainEvents.pipe(
+          // Events that landed before the subscription are not replayed, so
+          // start the watermark at the current head instead of zero.
+          Stream.onStart(orchestrationEngine.latestSequence.pipe(Effect.flatMap(noteSeen))),
+        ),
+        (event) =>
+          (event.type === "thread.settled" ? worker.enqueue(event) : Effect.void).pipe(
+            Effect.andThen(noteSeen(event.sequence)),
+          ),
+      ),
     );
+  });
+
+  const drainThrough: ThreadSettleCleanupReactor["Service"]["drainThrough"] = Effect.fn(
+    "ThreadSettleCleanupReactor.drainThrough",
+  )(function* (target) {
+    yield* SubscriptionRef.changes(seenSequence).pipe(
+      Stream.filter((seen) => seen >= target),
+      Stream.runHead,
+    );
+    yield* worker.drain;
   });
 
   return {
     start,
-    drain: worker.drain,
+    drainThrough,
   } satisfies ThreadSettleCleanupReactor["Service"];
 });
 
